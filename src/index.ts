@@ -31,8 +31,10 @@ export default {
 };
 
 async function handleWebSocket(request: Request, env: Env): Promise<Response> {
+  console.log('Main handleWebSocket called');
   const upgradeHeader = request.headers.get('Upgrade');
   if (!upgradeHeader || upgradeHeader !== 'websocket') {
+    console.log('Missing or invalid Upgrade header:', upgradeHeader);
     return new Response('Expected Upgrade: websocket', { status: 426 });
   }
   
@@ -41,22 +43,40 @@ async function handleWebSocket(request: Request, env: Env): Promise<Response> {
   const userId = url.searchParams.get('userId') || crypto.randomUUID();
   const username = url.searchParams.get('username') || 'User' + Math.floor(Math.random() * 1000);
   
+  console.log('WebSocket params from URL:', { roomId, userId, username });
+  
   const loadBalancerId = env.LOAD_BALANCER.idFromName('singleton');
   const loadBalancer = env.LOAD_BALANCER.get(loadBalancerId);
   
-  const loadBalancerRequest = new Request(request.url, {
-    method: 'POST',
+  console.log('About to create request for LoadBalancer');
+  
+  const loadBalancerUrl = new URL(request.url);
+  loadBalancerUrl.pathname = '/';
+  
+  // Add URL params for GET request  
+  loadBalancerUrl.searchParams.set('room', roomId);
+  loadBalancerUrl.searchParams.set('userId', userId);
+  loadBalancerUrl.searchParams.set('username', username);
+  
+  const loadBalancerRequest = new Request(loadBalancerUrl.toString(), {
+    method: 'GET',
     headers: {
-      'Content-Type': 'application/json',
       'Upgrade': request.headers.get('Upgrade') || '',
       'Connection': request.headers.get('Connection') || '',
       'Sec-WebSocket-Key': request.headers.get('Sec-WebSocket-Key') || '',
       'Sec-WebSocket-Version': request.headers.get('Sec-WebSocket-Version') || ''
-    },
-    body: JSON.stringify({ roomId, userId, username })
+    }
   });
   
-  return loadBalancer.fetch(loadBalancerRequest);
+  console.log('Calling loadBalancer.fetch');
+  try {
+    const response = await loadBalancer.fetch(loadBalancerRequest);
+    console.log('LoadBalancer response status:', response.status);
+    return response;
+  } catch (error) {
+    console.error('Error calling LoadBalancer:', error);
+    throw error;
+  }
 }
 
 async function handleStats(env: Env): Promise<Response> {

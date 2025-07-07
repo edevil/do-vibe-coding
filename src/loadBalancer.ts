@@ -16,8 +16,9 @@ export class LoadBalancer {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    console.log('LoadBalancer fetch called:', { method: request.method, pathname: url.pathname });
     
-    if (request.method === 'POST' && url.pathname === '/') {
+    if ((request.method === 'POST' || request.method === 'GET') && url.pathname === '/') {
       return this.handleRoomAssignment(request);
     }
     
@@ -29,12 +30,27 @@ export class LoadBalancer {
       return this.handleUpdateStats(request);
     }
     
+    console.log('LoadBalancer: No route matched, returning 404');
     return new Response('Not Found', { status: 404 });
   }
 
   private async handleRoomAssignment(request: Request): Promise<Response> {
-    const body = await request.json() as { roomId: string; userId: string; username: string };
-    const { roomId, userId, username } = body;
+    console.log('LoadBalancer handleRoomAssignment called');
+    
+    let roomId: string, userId: string, username: string;
+    
+    if (request.method === 'POST') {
+      const body = await request.json() as { roomId: string; userId: string; username: string };
+      ({ roomId, userId, username } = body);
+    } else {
+      // GET request - extract from URL params  
+      const url = new URL(request.url);
+      roomId = url.searchParams.get('room') || 'general';
+      userId = url.searchParams.get('userId') || crypto.randomUUID();
+      username = url.searchParams.get('username') || 'User' + Math.floor(Math.random() * 1000);
+    }
+    
+    console.log('Assignment params:', { roomId, userId, username });
     
     await this.refreshRoomStats();
     

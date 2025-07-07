@@ -37,12 +37,16 @@ export class Room {
   }
 
   private async handleWebSocket(request: Request): Promise<Response> {
+    console.log('Room handleWebSocket called');
     const url = new URL(request.url);
     const userId = url.searchParams.get('userId');
     const username = url.searchParams.get('username');
     const roomId = url.searchParams.get('roomId');
     
+    console.log('WebSocket params:', { userId, username, roomId });
+    
     if (!userId || !username || !roomId) {
+      console.log('Missing required parameters');
       return new Response('Missing required parameters', { status: 400 });
     }
     
