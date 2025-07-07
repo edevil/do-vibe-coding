@@ -58,10 +58,15 @@ export class LoadBalancer {
       return new Response('Expected Upgrade: websocket', { status: 426 });
     }
     
-    const roomRequest = new Request(`${request.url}join`, {
-      method: 'POST',
-      headers: request.headers,
-      body: JSON.stringify({ userId, username, roomId: targetRoomId })
+    const url = new URL(request.url);
+    url.pathname = '/websocket';
+    url.searchParams.set('userId', userId);
+    url.searchParams.set('username', username);
+    url.searchParams.set('roomId', targetRoomId);
+    
+    const roomRequest = new Request(url.toString(), {
+      method: 'GET',
+      headers: request.headers
     });
     
     try {
@@ -182,7 +187,7 @@ export class LoadBalancer {
         const roomObjectId = this.env.ROOMS.idFromName(roomId);
         const roomObject = this.env.ROOMS.get(roomObjectId);
         
-        const response = await roomObject.fetch('/stats');
+        const response = await roomObject.fetch(new Request('https://room/stats'));
         
         if (response.ok) {
           const stats = await response.json();

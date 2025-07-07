@@ -63,7 +63,7 @@ async function handleStats(env: Env): Promise<Response> {
   const loadBalancerId = env.LOAD_BALANCER.idFromName('singleton');
   const loadBalancer = env.LOAD_BALANCER.get(loadBalancerId);
   
-  const response = await loadBalancer.fetch('/stats');
+  const response = await loadBalancer.fetch(new Request('https://loadbalancer/stats'));
   return response;
 }
 
