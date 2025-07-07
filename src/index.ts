@@ -1,27 +1,42 @@
 import { Room } from './room';
 import { LoadBalancer } from './loadBalancer';
 
+// Export Durable Object classes for Cloudflare Workers
 export { Room, LoadBalancer };
 
+/**
+ * Environment bindings for Cloudflare Workers.
+ * These are configured in wrangler.toml and provide access to Durable Objects.
+ */
 export interface Env {
-  ROOMS: DurableObjectNamespace;
-  LOAD_BALANCER: DurableObjectNamespace;
+  ROOMS: DurableObjectNamespace; // Room Durable Object namespace
+  LOAD_BALANCER: DurableObjectNamespace; // LoadBalancer Durable Object namespace
 }
 
+/**
+ * Main Cloudflare Worker entry point.
+ * Routes requests to appropriate handlers:
+ * - GET / : Serves the chat application HTML
+ * - GET /ws : WebSocket connection (routed through LoadBalancer)  
+ * - GET /api/stats : System statistics and monitoring
+ */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     
+    // Serve the chat application frontend
     if (url.pathname === '/') {
       return new Response(getHTML(), {
         headers: { 'Content-Type': 'text/html' }
       });
     }
     
+    // Handle WebSocket connections via LoadBalancer
     if (url.pathname === '/ws') {
       return handleWebSocket(request, env);
     }
     
+    // Provide system statistics for monitoring
     if (url.pathname === '/api/stats') {
       return handleStats(env);
     }
@@ -30,14 +45,25 @@ export default {
   }
 };
 
+/**
+ * Handles WebSocket connection requests by routing them through the LoadBalancer.
+ * Extracts connection parameters and forwards to LoadBalancer for room assignment.
+ * 
+ * @param request - The incoming WebSocket upgrade request
+ * @param env - Cloudflare Workers environment with Durable Object bindings
+ * @returns Response with WebSocket upgrade or error
+ */
 async function handleWebSocket(request: Request, env: Env): Promise<Response> {
   console.log('Main handleWebSocket called');
+  
+  // Validate WebSocket upgrade headers
   const upgradeHeader = request.headers.get('Upgrade');
   if (!upgradeHeader || upgradeHeader !== 'websocket') {
     console.log('Missing or invalid Upgrade header:', upgradeHeader);
     return new Response('Expected Upgrade: websocket', { status: 426 });
   }
   
+  // Extract connection parameters from URL
   const url = new URL(request.url);
   const roomId = url.searchParams.get('room') || 'general';
   const userId = url.searchParams.get('userId') || crypto.randomUUID();
@@ -45,19 +71,22 @@ async function handleWebSocket(request: Request, env: Env): Promise<Response> {
   
   console.log('WebSocket params from URL:', { roomId, userId, username });
   
+  // Get singleton LoadBalancer instance
   const loadBalancerId = env.LOAD_BALANCER.idFromName('singleton');
   const loadBalancer = env.LOAD_BALANCER.get(loadBalancerId);
   
   console.log('About to create request for LoadBalancer');
   
+  // Prepare request for LoadBalancer with connection parameters
   const loadBalancerUrl = new URL(request.url);
   loadBalancerUrl.pathname = '/';
   
-  // Add URL params for GET request  
+  // Pass connection details as URL parameters
   loadBalancerUrl.searchParams.set('room', roomId);
   loadBalancerUrl.searchParams.set('userId', userId);
   loadBalancerUrl.searchParams.set('username', username);
   
+  // Forward WebSocket headers required for upgrade
   const loadBalancerRequest = new Request(loadBalancerUrl.toString(), {
     method: 'GET',
     headers: {
@@ -68,6 +97,7 @@ async function handleWebSocket(request: Request, env: Env): Promise<Response> {
     }
   });
   
+  // Delegate to LoadBalancer for room assignment and connection handling
   console.log('Calling loadBalancer.fetch');
   try {
     const response = await loadBalancer.fetch(loadBalancerRequest);
@@ -79,6 +109,13 @@ async function handleWebSocket(request: Request, env: Env): Promise<Response> {
   }
 }
 
+/**
+ * Provides system statistics by querying the LoadBalancer.
+ * Used for monitoring room capacity, user counts, and system health.
+ * 
+ * @param env - Environment with Durable Object bindings
+ * @returns JSON response with aggregated statistics
+ */
 async function handleStats(env: Env): Promise<Response> {
   const loadBalancerId = env.LOAD_BALANCER.idFromName('singleton');
   const loadBalancer = env.LOAD_BALANCER.get(loadBalancerId);
@@ -87,6 +124,19 @@ async function handleStats(env: Env): Promise<Response> {
   return response;
 }
 
+/**
+ * Generates the complete HTML for the chat application frontend.
+ * Includes CSS styling, JavaScript client code, and WebSocket handling.
+ * 
+ * Features:
+ * - Real-time messaging with WebSocket
+ * - User presence indicators and typing status
+ * - Random username generation on page load
+ * - Smart connection toggle button
+ * - Live statistics display
+ * 
+ * @returns Complete HTML document as string
+ */
 function getHTML(): string {
   const htmlParts = [
     '<!DOCTYPE html>',

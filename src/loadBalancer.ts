@@ -1,15 +1,32 @@
 import { RoomStats, LoadBalancerStats } from './types';
 import { OverloadProtectionManager } from './overloadProtection';
 
+/**
+ * LoadBalancer Durable Object - Manages room assignment and capacity distribution.
+ * 
+ * Responsibilities:
+ * - Routes new connections to optimal rooms based on capacity and load
+ * - Tracks room statistics and health across the system
+ * - Creates new rooms when existing ones reach capacity
+ * - Implements overload protection for the routing layer
+ * - Provides system-wide statistics and monitoring
+ */
 export class LoadBalancer {
+  // Core Durable Object infrastructure  
   private state: DurableObjectState;
   private env: any;
-  private roomStats: Map<string, RoomStats> = new Map();
-  private lastStatsUpdate: number = 0;
-  private statsUpdateInterval: number = 5000; // 5 seconds
-  private maxRoomsPerInstance: number = 10;
-  private maxUsersPerRoom: number = 100;
-  private overloadProtection: OverloadProtectionManager;
+  
+  // Room tracking and statistics
+  private roomStats: Map<string, RoomStats> = new Map(); // Real-time room metrics
+  private lastStatsUpdate: number = 0; // Last time we refreshed stats from rooms
+  private statsUpdateInterval: number = 5000; // How often to poll room stats (5 sec)
+  
+  // Capacity management
+  private maxRoomsPerInstance: number = 10; // Maximum rooms this LB can manage
+  private maxUsersPerRoom: number = 100; // Room capacity limit
+  
+  // Protection systems
+  private overloadProtection: OverloadProtectionManager; // Rate limiting and circuit breaker
 
   constructor(state: DurableObjectState, env: any) {
     this.state = state;

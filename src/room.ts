@@ -1,34 +1,61 @@
 import { Message, User, WebSocketSession, WebSocketMetadata } from './types';
 import { OverloadProtectionManager } from './overloadProtection';
 
+/**
+ * Room Durable Object - Manages a single chat room with WebSocket connections,
+ * message history, user presence, typing indicators, and overload protection.
+ * 
+ * Features:
+ * - Real-time messaging via WebSocket hibernation API
+ * - Persistent message history and user data in Durable Object storage
+ * - User presence tracking (online/away/offline status)
+ * - Typing indicators with auto-timeout
+ * - Rate limiting and overload protection
+ * - Automatic hibernation when inactive
+ */
 export class Room {
+  // Core Durable Object state and environment
   private state: DurableObjectState;
   private env: any;
-  private sessions: Map<string, WebSocketSession> = new Map();
-  private users: Map<string, User> = new Map();
-  private messages: Message[] = [];
-  private maxCapacity: number = 100;
-  private lastActivity: number = Date.now();
-  private roomId: string = '';
-  private overloadProtection: OverloadProtectionManager;
-  private hibernationTimeout: number | null = null;
-  private isHibernating: boolean = false;
-  private typingUsers: Set<string> = new Set();
-  private presenceUpdateInterval: number | null = null;
-  private messageRateLimits: Map<string, number[]> = new Map(); // userId -> timestamp array
+  
+  // Active connections and user tracking
+  private sessions: Map<string, WebSocketSession> = new Map(); // Active WebSocket connections
+  private users: Map<string, User> = new Map(); // All users (including offline)
+  private messages: Message[] = []; // In-memory message history (last 100)
+  
+  // Room configuration
+  private maxCapacity: number = 100; // Maximum concurrent connections
+  private lastActivity: number = Date.now(); // Last message/connection timestamp
+  private roomId: string = ''; // Unique room identifier
+  
+  // Feature managers
+  private overloadProtection: OverloadProtectionManager; // Rate limiting and circuit breaker
+  
+  // Hibernation management
+  private hibernationTimeout: number | null = null; // Timer for entering hibernation
+  private isHibernating: boolean = false; // Current hibernation state
+  
+  // Real-time features
+  private typingUsers: Set<string> = new Set(); // Users currently typing
+  private presenceUpdateInterval: number | null = null; // Periodic presence check timer
+  private messageRateLimits: Map<string, number[]> = new Map(); // Per-user message timestamps for rate limiting
 
   constructor(state: DurableObjectState, env: any) {
     this.state = state;
     this.env = env;
     this.overloadProtection = new OverloadProtectionManager();
     
-    // Enable hibernation API for WebSockets
+    // Enable hibernation API for WebSockets - allows connections to persist across isolate restarts
     this.state.acceptWebSocket = this.state.acceptWebSocket?.bind(this.state);
     
-    // Start presence update interval
+    // Start periodic presence updates to track user activity
     this.startPresenceUpdates();
   }
 
+  /**
+   * Starts the periodic presence update system.
+   * Runs every 30 seconds to update user online/away/offline status.
+   */
   private startPresenceUpdates(): void {
     if (this.presenceUpdateInterval) {
       clearInterval(this.presenceUpdateInterval);
@@ -40,6 +67,13 @@ export class Room {
     }, 30000);
   }
 
+  /**
+   * Updates user presence status based on connection state and last activity.
+   * Users are marked as:
+   * - online: connected and active within 5 minutes
+   * - away: connected but inactive for 5+ minutes  
+   * - offline: not connected
+   */
   private async updateUserPresence(): Promise<void> {
     const now = Date.now();
     const awayThreshold = 5 * 60 * 1000; // 5 minutes
@@ -61,7 +95,7 @@ export class Room {
         user.status = newStatus;
         presenceChanged = true;
         
-        // Clear typing if user goes away/offline
+        // Clear typing indicator if user goes away/offline
         if (newStatus !== 'online' && user.isTyping) {
           user.isTyping = false;
           this.typingUsers.delete(userId);
@@ -73,6 +107,7 @@ export class Room {
       }
     }
     
+    // Broadcast updates and persist changes if any status changed
     if (presenceChanged) {
       await this.broadcastPresenceUpdate();
       await this.saveUsers();
@@ -112,24 +147,40 @@ export class Room {
     }
   }
 
+  /**
+   * Checks if a user has exceeded the message rate limit.
+   * Implements a sliding window rate limiter: 20 messages per minute per user.
+   * 
+   * @param userId - The user ID to check
+   * @returns true if rate limited, false if message allowed
+   */
   private isMessageRateLimited(userId: string): boolean {
     const now = Date.now();
-    const timeWindow = 60000; // 1 minute
-    const maxMessages = 20; // 20 messages per minute
+    const timeWindow = 60000; // 1 minute sliding window
+    const maxMessages = 20; // Maximum messages per window
     
+    // Get user's recent message timestamps
     const userMessages = this.messageRateLimits.get(userId) || [];
     const recentMessages = userMessages.filter(timestamp => now - timestamp < timeWindow);
     
+    // Check if limit exceeded
     if (recentMessages.length >= maxMessages) {
-      return true;
+      return true; // Rate limited
     }
     
+    // Add current timestamp and update tracking
     recentMessages.push(now);
     this.messageRateLimits.set(userId, recentMessages);
     
-    return false;
+    return false; // Message allowed
   }
 
+  /**
+   * Handles when a user starts typing.
+   * Sets up auto-timeout and manages typing indicator state.
+   * 
+   * @param userId - The user who started typing
+   */
   private async handleTypingStart(userId: string): Promise<void> {
     const user = this.users.get(userId);
     if (!user) return;
@@ -138,34 +189,43 @@ export class Room {
     user.isTyping = true;
     this.typingUsers.add(userId);
     
-    // Clear existing timeout
+    // Clear existing timeout to reset the 3-second timer
     if (user.typingTimeout) {
       clearTimeout(user.typingTimeout);
     }
     
-    // Auto-stop typing after 3 seconds
+    // Auto-stop typing after 3 seconds of inactivity
     user.typingTimeout = setTimeout(() => {
       this.handleTypingStop(userId);
     }, 3000);
     
-    // Only broadcast if this is a new typing event or we need to refresh
+    // Only broadcast update if this is a new typing event (avoid spam)
     if (!wasTyping) {
       await this.broadcastTypingIndicators();
     }
   }
 
+  /**
+   * Handles when a user stops typing.
+   * Cleans up typing state and broadcasts update to all clients.
+   * 
+   * @param userId - The user who stopped typing
+   */
   private async handleTypingStop(userId: string): Promise<void> {
     const user = this.users.get(userId);
     if (!user || !user.isTyping) return;
     
+    // Clear typing state
     user.isTyping = false;
     this.typingUsers.delete(userId);
     
+    // Clean up timeout
     if (user.typingTimeout) {
       clearTimeout(user.typingTimeout);
       user.typingTimeout = undefined;
     }
     
+    // Broadcast updated typing indicators to all clients
     await this.broadcastTypingIndicators();
   }
 

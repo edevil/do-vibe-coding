@@ -1,13 +1,21 @@
+/**
+ * Circuit Breaker pattern implementation for preventing cascading failures.
+ * 
+ * States:
+ * - CLOSED: Normal operation, requests pass through
+ * - OPEN: Failing fast, all requests rejected
+ * - HALF_OPEN: Testing if service has recovered
+ */
 export class CircuitBreaker {
-  private failures: number = 0;
-  private lastFailureTime: number = 0;
-  private state: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED';
-  private readonly failureThreshold: number;
-  private readonly recoveryTimeout: number;
+  private failures: number = 0; // Count of consecutive failures
+  private lastFailureTime: number = 0; // Timestamp of last failure
+  private state: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED'; // Current circuit state
+  private readonly failureThreshold: number; // Failures needed to open circuit
+  private readonly recoveryTimeout: number; // Time before attempting recovery
 
   constructor(
-    failureThreshold: number = 5,
-    recoveryTimeout: number = 60000 // 1 minute
+    failureThreshold: number = 5, // Open after 5 failures
+    recoveryTimeout: number = 60000 // Try recovery after 1 minute
   ) {
     this.failureThreshold = failureThreshold;
     this.recoveryTimeout = recoveryTimeout;
@@ -55,10 +63,14 @@ export class CircuitBreaker {
   }
 }
 
+/**
+ * Sliding window rate limiter for controlling request frequency per identifier.
+ * Prevents abuse by limiting requests within a time window.
+ */
 export class RateLimiter {
-  private requests: Map<string, number[]> = new Map();
-  private readonly maxRequests: number;
-  private readonly windowMs: number;
+  private requests: Map<string, number[]> = new Map(); // identifier -> timestamp array
+  private readonly maxRequests: number; // Maximum requests per window
+  private readonly windowMs: number; // Time window in milliseconds
 
   constructor(maxRequests: number = 100, windowMs: number = 60000) {
     this.maxRequests = maxRequests;
@@ -156,15 +168,24 @@ export class ConnectionMonitor {
   }
 }
 
+/**
+ * Comprehensive overload protection system combining multiple protection mechanisms.
+ * 
+ * Features:
+ * - Circuit breaker for preventing cascading failures
+ * - Rate limiting per user to prevent abuse  
+ * - Connection monitoring to track resource usage
+ * - Graceful shutdown coordination
+ */
 export class OverloadProtectionManager {
-  private circuitBreaker: CircuitBreaker;
-  private rateLimiter: RateLimiter;
-  private connectionMonitor: ConnectionMonitor;
-  private isShuttingDown: boolean = false;
+  private circuitBreaker: CircuitBreaker; // Failure protection
+  private rateLimiter: RateLimiter; // Request frequency protection
+  private connectionMonitor: ConnectionMonitor; // Resource usage tracking
+  private isShuttingDown: boolean = false; // Shutdown state
 
   constructor() {
-    this.circuitBreaker = new CircuitBreaker(10, 60000);
-    this.rateLimiter = new RateLimiter(200, 60000);
+    this.circuitBreaker = new CircuitBreaker(10, 60000); // 10 failures, 1min recovery
+    this.rateLimiter = new RateLimiter(200, 60000); // 200 req/min per user
     this.connectionMonitor = new ConnectionMonitor();
   }
 
