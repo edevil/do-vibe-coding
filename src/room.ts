@@ -132,8 +132,9 @@ export class Room {
 
   private async handleTypingStart(userId: string): Promise<void> {
     const user = this.users.get(userId);
-    if (!user || user.isTyping) return;
+    if (!user) return;
     
+    const wasTyping = user.isTyping;
     user.isTyping = true;
     this.typingUsers.add(userId);
     
@@ -147,7 +148,10 @@ export class Room {
       this.handleTypingStop(userId);
     }, 3000);
     
-    await this.broadcastTypingIndicators();
+    // Only broadcast if this is a new typing event or we need to refresh
+    if (!wasTyping) {
+      await this.broadcastTypingIndicators();
+    }
   }
 
   private async handleTypingStop(userId: string): Promise<void> {
