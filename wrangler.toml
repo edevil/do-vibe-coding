@@ -1,0 +1,18 @@
+name = "durable-objects-chat"
+main = "src/index.ts"
+compatibility_date = "2024-09-25"
+compatibility_flags = ["nodejs_compat"]
+account_id = "813f7cf27f397ca7f1eb774694de2594"
+
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[durable_objects.bindings]]
+name = "LOAD_BALANCER"
+class_name = "LoadBalancer"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["Room", "LoadBalancer"]
