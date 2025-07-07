@@ -71,20 +71,31 @@ export class LoadBalancer {
     }
     
     console.log('Assignment params:', { roomId, userId, username });
+    console.log('Creating Durable Object ID for room:', roomId);
     
     // Apply overload protection to room assignment
     try {
       return await this.overloadProtection.executeWithProtection(userId, async () => {
         await this.refreshRoomStats();
         
-        const targetRoomId = this.selectOptimalRoom(roomId);
-        
-        if (!targetRoomId) {
-          throw new Error('No available rooms');
-        }
+        // For chat rooms, each room name should map to its own Durable Object instance
+        // Don't use load balancing logic - just use the requested room directly
+        const targetRoomId = roomId;
         
         const roomObjectId = this.env.ROOMS.idFromName(targetRoomId);
         const roomObject = this.env.ROOMS.get(roomObjectId);
+        
+        // Ensure this room is tracked in our stats
+        if (!this.roomStats.has(targetRoomId)) {
+          const newRoom: RoomStats = {
+            id: targetRoomId,
+            userCount: 0,
+            maxCapacity: this.maxUsersPerRoom,
+            isOverloaded: false,
+            lastActivity: Date.now()
+          };
+          this.roomStats.set(targetRoomId, newRoom);
+        }
         
         const upgradeHeader = request.headers.get('Upgrade');
         if (upgradeHeader !== 'websocket') {
@@ -122,13 +133,22 @@ export class LoadBalancer {
     }
   }
 
+  /**
+   * Handles requests for LoadBalancer statistics.
+   * Returns aggregated stats across all managed rooms.
+   * 
+   * @returns JSON response with room statistics and totals
+   */
   private async handleGetStats(): Promise<Response> {
     await this.refreshRoomStats();
     
-    const stats: LoadBalancerStats = {
+    // Convert Map to plain object for JSON serialization
+    const roomStatsObject = Object.fromEntries(this.roomStats.entries());
+    
+    const stats = {
       totalRooms: this.roomStats.size,
       totalUsers: Array.from(this.roomStats.values()).reduce((sum, room) => sum + room.userCount, 0),
-      roomStats: this.roomStats
+      roomStats: roomStatsObject
     };
     
     return new Response(JSON.stringify(stats), {

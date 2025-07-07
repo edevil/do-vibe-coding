@@ -344,7 +344,8 @@ export class Room {
     const username = url.searchParams.get('username');
     const roomId = url.searchParams.get('roomId');
     
-    console.log('WebSocket params:', { userId, username, roomId });
+    console.log('Room Durable Object - WebSocket params:', { userId, username, roomId });
+    console.log('Current Room DO roomId before assignment:', this.roomId);
     
     if (!userId || !username || !roomId) {
       console.log('Missing required parameters');
@@ -355,6 +356,7 @@ export class Room {
     try {
       return await this.overloadProtection.executeWithProtection(userId, async () => {
         this.roomId = roomId;
+        console.log('Room DO roomId set to:', this.roomId);
         
         if (this.sessions.size >= this.maxCapacity) {
           throw new Error('Room at capacity');

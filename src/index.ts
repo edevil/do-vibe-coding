@@ -41,6 +41,11 @@ export default {
       return handleStats(env);
     }
     
+    // Provide room list for UI
+    if (url.pathname === '/api/rooms') {
+      return handleRoomList(env);
+    }
+    
     return new Response('Not Found', { status: 404 });
   }
 };
@@ -125,6 +130,43 @@ async function handleStats(env: Env): Promise<Response> {
 }
 
 /**
+ * Provides a list of available rooms with their basic information.
+ * Used by the UI to display room selection options.
+ * 
+ * @param env - Environment with Durable Object bindings  
+ * @returns JSON response with room list and metadata
+ */
+async function handleRoomList(env: Env): Promise<Response> {
+  const loadBalancerId = env.LOAD_BALANCER.idFromName('singleton');
+  const loadBalancer = env.LOAD_BALANCER.get(loadBalancerId);
+  
+  // Get stats which contain room information
+  const response = await loadBalancer.fetch(new Request('https://loadbalancer/stats'));
+  const stats = await response.json() as any;
+  
+  // Transform room stats into a simplified room list
+  const rooms = Object.entries(stats.roomStats || {}).map(([roomId, roomData]: [string, any]) => ({
+    id: roomId,
+    name: roomId.charAt(0).toUpperCase() + roomId.slice(1), // Capitalize first letter
+    userCount: roomData.userCount || 0,
+    isActive: roomData.userCount > 0
+  }));
+  
+  // Add some default/popular rooms if no rooms exist
+  if (rooms.length === 0) {
+    rooms.push(
+      { id: 'general', name: 'General', userCount: 0, isActive: false },
+      { id: 'random', name: 'Random', userCount: 0, isActive: false },
+      { id: 'help', name: 'Help', userCount: 0, isActive: false }
+    );
+  }
+  
+  return new Response(JSON.stringify({ rooms }), {
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+/**
  * Generates the complete HTML for the chat application frontend.
  * Includes CSS styling, JavaScript client code, and WebSocket handling.
  * 
@@ -148,6 +190,14 @@ function getHTML(): string {
     '        .container { max-width: 1000px; margin: 0 auto; display: flex; gap: 20px; }',
     '        .main-chat { flex: 1; }',
     '        .sidebar { width: 250px; }',
+    '        .room-list { border: 1px solid #ccc; padding: 10px; margin-bottom: 10px; }',
+    '        .room-item { padding: 8px; margin: 2px 0; cursor: pointer; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }',
+    '        .room-item:hover { background-color: #f0f0f0; }',
+    '        .room-item.active { background-color: #e3f2fd; }',
+    '        .room-item.current { background-color: #2196F3; color: white; }',
+    '        .room-name { font-weight: bold; }',
+    '        .room-count { font-size: 12px; color: #666; background: #eee; padding: 2px 6px; border-radius: 10px; }',
+    '        .room-item.current .room-count { background: rgba(255,255,255,0.2); color: white; }',
     '        .chat-box { border: 1px solid #ccc; height: 400px; overflow-y: auto; padding: 10px; margin-bottom: 10px; }',
     '        .input-container { display: flex; gap: 10px; }',
     '        input[type="text"] { flex: 1; padding: 10px; }',
@@ -184,6 +234,10 @@ function getHTML(): string {
     '            </div>',
     '        </div>',
     '        <div class="sidebar">',
+    '            <div class="room-list">',
+    '                <h3>Rooms</h3>',
+    '                <div id="room-list"></div>',
+    '            </div>',
     '            <div class="user-list">',
     '                <h3>Users Online</h3>',
     '                <div id="user-list"></div>',
@@ -200,6 +254,8 @@ function getHTML(): string {
     '        let users = new Map();',
     '        let isTyping = false;',
     '        let typingTimeout = null;',
+    '        let currentRoom = "general";',
+    '        let availableRooms = [];',
     '        function generateRandomUsername() {',
     '            const adjectives = ["Swift", "Brave", "Clever", "Bright", "Cool", "Wise", "Kind", "Bold", "Quick", "Smart", "Sharp", "Fast", "Strong", "Wild", "Free"];',
     '            const animals = ["Fox", "Eagle", "Tiger", "Wolf", "Bear", "Lion", "Hawk", "Owl", "Deer", "Rabbit", "Falcon", "Lynx", "Puma", "Otter", "Raven"];',
@@ -207,6 +263,59 @@ function getHTML(): string {
     '            const animal = animals[Math.floor(Math.random() * animals.length)];',
     '            const number = Math.floor(Math.random() * 100);',
     '            return adjective + animal + number;',
+    '        }',
+    '        async function loadRoomList() {',
+    '            try {',
+    '                const response = await fetch("/api/rooms");',
+    '                const data = await response.json();',
+    '                availableRooms = data.rooms;',
+    '                updateRoomList();',
+    '            } catch (error) {',
+    '                console.error("Failed to load room list:", error);',
+    '            }',
+    '        }',
+    '        function updateRoomList() {',
+    '            const roomListDiv = document.getElementById("room-list");',
+    '            roomListDiv.innerHTML = "";',
+    '            availableRooms.forEach(room => {',
+    '                const roomDiv = document.createElement("div");',
+    '                roomDiv.className = "room-item" + (room.id === currentRoom ? " current" : (room.isActive ? " active" : ""));',
+    '                roomDiv.onclick = () => {',
+    '                    console.log("Room clicked:", room.id);',
+    '                    switchRoom(room.id);',
+    '                };',
+    '                const nameSpan = document.createElement("span");',
+    '                nameSpan.className = "room-name";',
+    '                nameSpan.textContent = room.name;',
+    '                const countSpan = document.createElement("span");',
+    '                countSpan.className = "room-count";',
+    '                countSpan.textContent = room.userCount.toString();',
+    '                roomDiv.appendChild(nameSpan);',
+    '                roomDiv.appendChild(countSpan);',
+    '                roomListDiv.appendChild(roomDiv);',
+    '            });',
+    '        }',
+    '        function switchRoom(roomId) {',
+    '            console.log("switchRoom called with:", roomId);',
+    '            console.log("currentRoom before:", currentRoom);',
+    '            if (roomId === currentRoom) {',
+    '                console.log("Already in this room, ignoring");',
+    '                return;',
+    '            }',
+    '            const wasConnected = ws && ws.readyState === WebSocket.OPEN;',
+    '            console.log("Was connected:", wasConnected);',
+    '            if (wasConnected) {',
+    '                disconnect();',
+    '            }',
+    '            currentRoom = roomId;',
+    '            document.getElementById("room").value = roomId;',
+    '            console.log("currentRoom after update:", currentRoom);',
+    '            console.log("room input field value:", document.getElementById("room").value);',
+    '            document.getElementById("chat-box").innerHTML = "";',
+    '            updateRoomList();',
+    '            if (wasConnected) {',
+    '                setTimeout(() => connect(), 100);',
+    '            }',
     '        }',
     '        function toggleConnection() {',
     '            if (ws && ws.readyState === WebSocket.OPEN) {',
@@ -217,7 +326,14 @@ function getHTML(): string {
     '        }',
     '        function connect() {',
     '            const username = document.getElementById("username").value;',
-    '            const room = document.getElementById("room").value;',
+    '            const roomInputValue = document.getElementById("room").value;',
+    '            // Always use the input field value and sync currentRoom',
+    '            currentRoom = roomInputValue;',
+    '            const room = currentRoom;',
+    '            console.log("connect() called");',
+    '            console.log("room input field:", roomInputValue);',
+    '            console.log("currentRoom synced to:", currentRoom);',
+    '            console.log("Final room value used for connection:", room);',
     '            const btn = document.getElementById("connection-btn");',
     '            if (ws) { ws.close(); }',
     '            btn.textContent = "Connecting...";',
@@ -230,6 +346,10 @@ function getHTML(): string {
     '                btn.textContent = "Disconnect";',
     '                btn.disabled = false;',
     '                ws.send(JSON.stringify({ type: "requestUserList" }));',
+    '                // Update room list to reflect current connection',
+    '                updateRoomList();',
+    '                // Refresh room list to make sure new room appears if it did not exist',
+    '                loadRoomList();',
     '            };',
     '            ws.onmessage = (event) => {',
     '                const message = JSON.parse(event.data);',
@@ -311,12 +431,15 @@ function getHTML(): string {
     '        }',
     '        function updateTypingIndicator(typingUsers) {',
     '            const indicator = document.getElementById("typing-indicator");',
-    '            if (typingUsers.length === 0) {',
+    '            const currentUsername = document.getElementById("username").value;',
+    '            // Filter out the current user from typing indicators',
+    '            const otherTypingUsers = typingUsers.filter(username => username !== currentUsername);',
+    '            if (otherTypingUsers.length === 0) {',
     '                indicator.textContent = "";',
-    '            } else if (typingUsers.length === 1) {',
-    '                indicator.textContent = typingUsers[0] + " is typing...";',
+    '            } else if (otherTypingUsers.length === 1) {',
+    '                indicator.textContent = otherTypingUsers[0] + " is typing...";',
     '            } else {',
-    '                indicator.textContent = typingUsers.join(", ") + " are typing...";',
+    '                indicator.textContent = otherTypingUsers.join(", ") + " are typing...";',
     '            }',
     '        }',
     '        function addMessage(content, type) {',
@@ -332,11 +455,16 @@ function getHTML(): string {
     '                const response = await fetch("/api/stats");',
     '                const stats = await response.json();',
     '                document.getElementById("stats-display").innerHTML = "<pre>" + JSON.stringify(stats, null, 2) + "</pre>";',
+    '                // Also refresh room list',
+    '                await loadRoomList();',
     '            } catch (error) { console.error("Failed to load stats:", error); }',
     '        }, 5000);',
-    '        // Set random username on page load',
-    '        document.addEventListener("DOMContentLoaded", function() {',
+    '        // Initialize page on load',
+    '        document.addEventListener("DOMContentLoaded", async function() {',
     '            document.getElementById("username").value = generateRandomUsername();',
+    '            // Set initial room from input field',
+    '            currentRoom = document.getElementById("room").value;',
+    '            await loadRoomList();',
     '        });',
     '    </script>',
     '</body>',

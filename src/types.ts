@@ -45,7 +45,7 @@ export interface RoomStats {
 export interface LoadBalancerStats {
   totalRooms: number; // Number of active rooms
   totalUsers: number; // Sum of users across all rooms
-  roomStats: Map<string, RoomStats>; // Per-room detailed stats
+  roomStats: Record<string, RoomStats>; // Per-room detailed stats (serializable object)
 }
 
 /**
