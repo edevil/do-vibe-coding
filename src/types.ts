@@ -34,4 +34,12 @@ export interface WebSocketSession {
   username: string;
   roomId: string;
   lastPing: number;
+  connectedAt: number;
+}
+
+export interface WebSocketMetadata {
+  userId: string;
+  username: string;
+  roomId: string;
+  connectedAt: number;
 }
