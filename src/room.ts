@@ -13,6 +13,8 @@ export class Room {
   private overloadProtection: OverloadProtectionManager;
   private hibernationTimeout: number | null = null;
   private isHibernating: boolean = false;
+  private typingUsers: Set<string> = new Set();
+  private presenceUpdateInterval: number | null = null;
 
   constructor(state: DurableObjectState, env: any) {
     this.state = state;
@@ -21,6 +23,145 @@ export class Room {
     
     // Enable hibernation API for WebSockets
     this.state.acceptWebSocket = this.state.acceptWebSocket?.bind(this.state);
+    
+    // Start presence update interval
+    this.startPresenceUpdates();
+  }
+
+  private startPresenceUpdates(): void {
+    if (this.presenceUpdateInterval) {
+      clearInterval(this.presenceUpdateInterval);
+    }
+    
+    // Update presence every 30 seconds
+    this.presenceUpdateInterval = setInterval(() => {
+      this.updateUserPresence();
+    }, 30000);
+  }
+
+  private async updateUserPresence(): Promise<void> {
+    const now = Date.now();
+    const awayThreshold = 5 * 60 * 1000; // 5 minutes
+    let presenceChanged = false;
+    
+    for (const [userId, user] of this.users.entries()) {
+      const isConnected = this.sessions.has(userId);
+      const timeSinceLastSeen = now - user.lastSeen;
+      
+      let newStatus: 'online' | 'away' | 'offline' = user.status;
+      
+      if (isConnected) {
+        newStatus = timeSinceLastSeen > awayThreshold ? 'away' : 'online';
+      } else {
+        newStatus = 'offline';
+      }
+      
+      if (user.status !== newStatus) {
+        user.status = newStatus;
+        presenceChanged = true;
+        
+        // Clear typing if user goes away/offline
+        if (newStatus !== 'online' && user.isTyping) {
+          user.isTyping = false;
+          this.typingUsers.delete(userId);
+          if (user.typingTimeout) {
+            clearTimeout(user.typingTimeout);
+            user.typingTimeout = undefined;
+          }
+        }
+      }
+    }
+    
+    if (presenceChanged) {
+      await this.broadcastPresenceUpdate();
+      await this.saveUsers();
+    }
+  }
+
+  private async broadcastPresenceUpdate(): Promise<void> {
+    const userList = Array.from(this.users.values()).map(user => ({
+      id: user.id,
+      username: user.username,
+      status: user.status,
+      isTyping: user.isTyping,
+      lastSeen: user.lastSeen
+    }));
+    
+    const presenceMessage: Message = {
+      id: crypto.randomUUID(),
+      roomId: this.roomId,
+      userId: 'system',
+      username: 'System',
+      content: JSON.stringify(userList),
+      timestamp: Date.now(),
+      type: 'userList'
+    };
+    
+    this.broadcastMessage(presenceMessage);
+  }
+
+  private async updateUserActivity(userId: string): Promise<void> {
+    const user = this.users.get(userId);
+    if (user) {
+      user.lastSeen = Date.now();
+      if (user.status !== 'online') {
+        user.status = 'online';
+        await this.broadcastPresenceUpdate();
+      }
+    }
+  }
+
+  private async handleTypingStart(userId: string): Promise<void> {
+    const user = this.users.get(userId);
+    if (!user || user.isTyping) return;
+    
+    user.isTyping = true;
+    this.typingUsers.add(userId);
+    
+    // Clear existing timeout
+    if (user.typingTimeout) {
+      clearTimeout(user.typingTimeout);
+    }
+    
+    // Auto-stop typing after 3 seconds
+    user.typingTimeout = setTimeout(() => {
+      this.handleTypingStop(userId);
+    }, 3000);
+    
+    await this.broadcastTypingIndicators();
+  }
+
+  private async handleTypingStop(userId: string): Promise<void> {
+    const user = this.users.get(userId);
+    if (!user || !user.isTyping) return;
+    
+    user.isTyping = false;
+    this.typingUsers.delete(userId);
+    
+    if (user.typingTimeout) {
+      clearTimeout(user.typingTimeout);
+      user.typingTimeout = undefined;
+    }
+    
+    await this.broadcastTypingIndicators();
+  }
+
+  private async broadcastTypingIndicators(): Promise<void> {
+    const typingUsernames = Array.from(this.typingUsers)
+      .map(userId => this.users.get(userId)?.username)
+      .filter(username => username);
+    
+    const typingMessage: Message = {
+      id: crypto.randomUUID(),
+      roomId: this.roomId,
+      userId: 'system',
+      username: 'System',
+      content: JSON.stringify(typingUsernames),
+      timestamp: Date.now(),
+      type: 'typing'
+    };
+    
+    this.broadcastMessage(typingMessage);
   }
 
   async loadPersistedState(): Promise<void> {
@@ -165,10 +306,14 @@ export class Room {
     this.sessions.set(userId, session);
     this.overloadProtection.updateConnectionCount(this.sessions.size);
     
+    const now = Date.now();
     const user: User = {
       id: userId,
       username,
-      connectedAt: Date.now()
+      connectedAt: now,
+      lastSeen: now,
+      status: 'online',
+      isTyping: false
     };
     this.users.set(userId, user);
     
@@ -178,6 +323,9 @@ export class Room {
     this.broadcastUserJoined(user);
     this.sendRecentMessages(server);
     await this.updateActivity();
+    
+    // Send current user list to new user
+    await this.broadcastPresenceUpdate();
     
     return new Response(null, {
       status: 101,
@@ -247,6 +395,9 @@ export class Room {
         return;
       }
       
+      // Update user activity for any message
+      await this.updateUserActivity(userId);
+      
       if (parsedData.type === 'ping') {
         session.lastPing = Date.now();
         session.websocket.send(JSON.stringify({ type: 'pong' }));
@@ -254,6 +405,9 @@ export class Room {
       }
       
       if (parsedData.type === 'message') {
+        // Stop typing when user sends message
+        await this.handleTypingStop(userId);
+        
         const message: Message = {
           id: crypto.randomUUID(),
           roomId: this.roomId,
@@ -276,21 +430,19 @@ export class Room {
         }
         
         this.broadcastMessage(message);
-        this.updateActivity();
+        await this.updateActivity();
       }
       
       if (parsedData.type === 'typing') {
-        const typingMessage: Message = {
-          id: crypto.randomUUID(),
-          roomId: this.roomId,
-          userId,
-          username: session.username,
-          content: '',
-          timestamp: Date.now(),
-          type: 'typing'
-        };
-        
-        this.broadcastMessage(typingMessage, userId);
+        if (parsedData.isTyping) {
+          await this.handleTypingStart(userId);
+        } else {
+          await this.handleTypingStop(userId);
+        }
+      }
+      
+      if (parsedData.type === 'requestUserList') {
+        await this.broadcastPresenceUpdate();
       }
     } catch (error) {
       console.error('Error handling message:', error);
@@ -486,7 +638,10 @@ export class Room {
       const user: User = {
         id: userId,
         username: metadata.username,
-        connectedAt: metadata.connectedAt
+        connectedAt: metadata.connectedAt,
+        lastSeen: Date.now(),
+        status: 'online',
+        isTyping: false
       };
       this.users.set(userId, user);
     }

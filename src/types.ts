@@ -5,13 +5,17 @@ export interface Message {
   username: string;
   content: string;
   timestamp: number;
-  type: 'message' | 'join' | 'leave' | 'typing';
+  type: 'message' | 'join' | 'leave' | 'typing' | 'presence' | 'userList';
 }
 
 export interface User {
   id: string;
   username: string;
   connectedAt: number;
+  lastSeen: number;
+  status: 'online' | 'away' | 'offline';
+  isTyping: boolean;
+  typingTimeout?: number;
 }
 
 export interface RoomStats {
