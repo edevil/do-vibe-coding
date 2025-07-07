@@ -22,7 +22,6 @@ Real-time multi-room chat application built with Cloudflare Durable Objects, fea
 - **Random username generation** on page load
 - **Smart connection management** to prevent race conditions
 - **Comprehensive monitoring** with health checks and detailed metrics
-- **Graceful shutdown** coordination across all Durable Objects
 - **Automatic cleanup scheduling** to prevent memory leaks
 
 ## Technical Implementation Details
@@ -57,13 +56,12 @@ Uses Cloudflare's hibernation API (`state.acceptWebSocket`) to maintain connecti
 - `GET /ws` - WebSocket connection endpoint (routes through LoadBalancer)
 - `GET /api/stats` - System statistics for monitoring
 - `GET /api/rooms` - Available rooms with user counts for UI
-- `GET /api/health` - **NEW** System health check with protection status
-- `GET /api/metrics` - **NEW** Detailed load metrics and system performance
-- `POST /api/shutdown` - **NEW** Graceful shutdown coordination (production should protect this)
+- `GET /api/health` - System health check with protection status
+- `GET /api/metrics` - **⚠️ SENSITIVE** Detailed load metrics and system performance
 
 ### Internal Durable Object Endpoints
-- **LoadBalancer**: `GET /` (room assignment), `GET /stats`, `GET /health`, `GET /metrics`, `POST /shutdown`
-- **Room**: `GET /websocket` (WebSocket upgrade), `POST /join`, `GET /stats`, `POST /hibernate`, `POST /shutdown`
+- **LoadBalancer**: `GET /` (room assignment), `GET /stats`, `GET /health`, `GET /metrics`
+- **Room**: `GET /websocket` (WebSocket upgrade), `POST /join`, `GET /stats`, `POST /hibernate`
 
 ## Known Issues Resolved
 
@@ -120,7 +118,27 @@ Uses Cloudflare's hibernation API (`state.acceptWebSocket`) to maintain connecti
 - **Code Documentation**: JSDoc comments throughout for maintainability
 - **Code Quality**: All unused functions removed, clean codebase with only necessary code
 - **Monitoring**: Production-ready health checks and metrics endpoints
-- **Operational**: Graceful shutdown and automatic cleanup prevent resource leaks
+- **Operational**: Automatic cleanup prevents resource leaks
+
+## Security Considerations
+
+### Endpoint Protection Recommendations
+- **`/api/metrics`** - **HIGH SENSITIVITY** - Should be protected with API keys or IP allowlisting
+  - Exposes detailed system performance, circuit breaker states, and protection metrics
+  - Could reveal system vulnerabilities and capacity information
+- **`/api/stats`** - **MEDIUM SENSITIVITY** - Consider protection for production
+  - Shows room names, user counts, and activity patterns
+  - Could be used for reconnaissance or competitive analysis
+- **`/api/health`** - **PUBLIC OK** - Standard practice for load balancer health checks
+- **`/api/rooms`** - **PUBLIC OK** - Filtered room list needed for UI functionality
+
+### Production Security Checklist
+- [ ] Implement API key authentication for sensitive endpoints
+- [ ] Configure IP allowlisting for monitoring systems
+- [ ] Enable Cloudflare security features (DDoS protection, rate limiting)
+- [ ] Review and reduce logging verbosity
+- [ ] Consider adding request size limits beyond current 10KB message limit
+- [ ] Monitor for abuse patterns via overload protection metrics
 
 ## Future Enhancement Ideas
 - Message encryption for privacy
@@ -130,3 +148,4 @@ Uses Cloudflare's hibernation API (`state.acceptWebSocket`) to maintain connecti
 - Message search and history export
 - Mobile-responsive UI improvements
 - Push notifications for mentions
+- Enhanced endpoint security with role-based access

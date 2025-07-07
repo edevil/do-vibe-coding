@@ -61,10 +61,6 @@ export class LoadBalancer {
       return this.handleMetrics();
     }
     
-    if (request.method === 'POST' && url.pathname === '/shutdown') {
-      return this.handleShutdown();
-    }
-    
     console.log('LoadBalancer: No route matched, returning 404');
     return new Response('Not Found', { status: 404 });
   }
@@ -246,45 +242,6 @@ export class LoadBalancer {
     });
   }
 
-  /**
-   * Handles graceful shutdown requests.
-   * Initiates shutdown process and notifies all rooms.
-   */
-  private async handleShutdown(): Promise<Response> {
-    console.log('LoadBalancer: Graceful shutdown initiated');
-    
-    // Initiate shutdown in overload protection
-    this.overloadProtection.initiateGracefulShutdown();
-    
-    // Notify all active rooms to prepare for shutdown
-    const shutdownPromises = Array.from(this.roomStats.keys()).map(async (roomId) => {
-      try {
-        const roomObjectId = this.env.ROOMS.idFromName(roomId);
-        const roomObject = this.env.ROOMS.get(roomObjectId);
-        
-        // Send shutdown signal to room
-        await roomObject.fetch(new Request('https://room/shutdown', {
-          method: 'POST'
-        }));
-      } catch (error) {
-        console.error(`Failed to notify room ${roomId} of shutdown:`, error);
-      }
-    });
-    
-    // Wait for all rooms to acknowledge shutdown (with timeout)
-    await Promise.allSettled(shutdownPromises);
-    
-    const shutdownStatus = {
-      status: 'shutdown_initiated',
-      timestamp: new Date().toISOString(),
-      roomsNotified: this.roomStats.size,
-      message: 'Graceful shutdown in progress'
-    };
-    
-    return new Response(JSON.stringify(shutdownStatus), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
 
 
   private async refreshRoomStats(): Promise<void> {

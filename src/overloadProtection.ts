@@ -233,10 +233,6 @@ export class OverloadProtectionManager {
     };
   }
 
-  initiateGracefulShutdown(): void {
-    this.isShuttingDown = true;
-    console.log('Overload protection: Initiating graceful shutdown');
-  }
 
   isSystemHealthy(): boolean {
     const health = this.connectionMonitor.getHealthStatus();

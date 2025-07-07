@@ -56,11 +56,6 @@ export default {
       return handleMetrics(env);
     }
     
-    // Graceful shutdown endpoint (POST only for safety)
-    if (url.pathname === '/api/shutdown' && request.method === 'POST') {
-      return handleShutdown(env);
-    }
-    
     return new Response('Not Found', { status: 404 });
   }
 };
@@ -233,33 +228,6 @@ async function handleMetrics(env: Env): Promise<Response> {
   }
 }
 
-/**
- * Initiates graceful shutdown of the system.
- * This endpoint should be protected in production environments.
- * 
- * @param env - Environment with Durable Object bindings
- * @returns JSON response with shutdown status
- */
-async function handleShutdown(env: Env): Promise<Response> {
-  const loadBalancerId = env.LOAD_BALANCER.idFromName('singleton');
-  const loadBalancer = env.LOAD_BALANCER.get(loadBalancerId);
-  
-  try {
-    const response = await loadBalancer.fetch(new Request('https://loadbalancer/shutdown', {
-      method: 'POST'
-    }));
-    return response;
-  } catch (error) {
-    return new Response(JSON.stringify({
-      status: 'error',
-      message: 'Failed to initiate shutdown',
-      error: error instanceof Error ? error.message : 'Unknown error'
-    }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
-}
 
 /**
  * Generates the complete HTML for the chat application frontend.
