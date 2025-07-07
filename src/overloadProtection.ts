@@ -106,27 +106,11 @@ export class RateLimiter {
   }
 }
 
-export class WorkerResourceMonitor {
-  private startTime: number;
+export class ConnectionMonitor {
   private connectionCount: number = 0;
   private requestCount: number = 0;
   private lastRequestTime: number = Date.now();
-  private readonly limits = {
-    cpuTime: 50000, // 50 seconds for paid plan
-    memoryMB: 128,  // 128MB limit
-    maxConnections: 1000
-  };
-
-  constructor() {
-    this.startTime = this.getHighResolutionTime();
-  }
-
-  private getHighResolutionTime(): number {
-    if (typeof performance !== 'undefined' && performance.now) {
-      return performance.now();
-    }
-    return Date.now();
-  }
+  private readonly maxConnections: number = 500;
 
   updateConnectionCount(count: number): void {
     this.connectionCount = count;
@@ -137,56 +121,19 @@ export class WorkerResourceMonitor {
     this.lastRequestTime = Date.now();
   }
 
-  getExecutionTime(): number {
-    return this.getHighResolutionTime() - this.startTime;
-  }
-
-  getMemoryUsage(): number {
-    if (typeof performance !== 'undefined' && (performance as any).memory && (performance as any).memory.usedJSHeapSize) {
-      return (performance as any).memory.usedJSHeapSize / (1024 * 1024); // Convert to MB
-    }
-    return 0;
-  }
-
-  isApproachingCpuLimit(): boolean {
-    const executionTime = this.getExecutionTime();
-    return executionTime > (this.limits.cpuTime * 0.8); // 80% of limit
-  }
-
-  isApproachingMemoryLimit(): boolean {
-    const memoryUsage = this.getMemoryUsage();
-    return memoryUsage > 0 && memoryUsage > (this.limits.memoryMB * 0.8); // 80% of limit
-  }
-
   isOverloaded(): boolean {
-    return (
-      this.isApproachingCpuLimit() ||
-      this.isApproachingMemoryLimit() ||
-      this.connectionCount > this.limits.maxConnections
-    );
+    return this.connectionCount > this.maxConnections;
   }
 
   getHealthStatus(): {
     status: 'healthy' | 'warning' | 'critical';
-    executionTime: number;
-    memory: number;
     connections: number;
     requests: number;
     issues: string[];
   } {
     const issues: string[] = [];
-    const executionTime = this.getExecutionTime();
-    const memory = this.getMemoryUsage();
     
-    if (this.isApproachingCpuLimit()) {
-      issues.push(`High CPU time: ${executionTime.toFixed(1)}ms`);
-    }
-    
-    if (this.isApproachingMemoryLimit()) {
-      issues.push(`High memory usage: ${memory.toFixed(1)}MB`);
-    }
-    
-    if (this.connectionCount > this.limits.maxConnections * 0.8) {
+    if (this.connectionCount > this.maxConnections * 0.8) {
       issues.push(`High connection count: ${this.connectionCount}`);
     }
     
@@ -198,8 +145,6 @@ export class WorkerResourceMonitor {
     
     return {
       status,
-      executionTime,
-      memory,
       connections: this.connectionCount,
       requests: this.requestCount,
       issues
@@ -207,7 +152,6 @@ export class WorkerResourceMonitor {
   }
 
   reset(): void {
-    this.startTime = this.getHighResolutionTime();
     this.requestCount = 0;
   }
 }
@@ -215,13 +159,13 @@ export class WorkerResourceMonitor {
 export class OverloadProtectionManager {
   private circuitBreaker: CircuitBreaker;
   private rateLimiter: RateLimiter;
-  private resourceMonitor: WorkerResourceMonitor;
+  private connectionMonitor: ConnectionMonitor;
   private isShuttingDown: boolean = false;
 
   constructor() {
-    this.circuitBreaker = new CircuitBreaker(5, 60000);
-    this.rateLimiter = new RateLimiter(100, 60000);
-    this.resourceMonitor = new WorkerResourceMonitor();
+    this.circuitBreaker = new CircuitBreaker(10, 60000);
+    this.rateLimiter = new RateLimiter(200, 60000);
+    this.connectionMonitor = new ConnectionMonitor();
   }
 
   async executeWithProtection<T>(
@@ -236,17 +180,17 @@ export class OverloadProtectionManager {
       throw new Error('Rate limit exceeded');
     }
 
-    if (this.resourceMonitor.isOverloaded()) {
-      throw new Error('System overloaded');
+    if (this.connectionMonitor.isOverloaded()) {
+      throw new Error('Too many connections');
     }
 
-    this.resourceMonitor.incrementRequestCount();
+    this.connectionMonitor.incrementRequestCount();
 
     return await this.circuitBreaker.execute(operation);
   }
 
   updateConnectionCount(count: number): void {
-    this.resourceMonitor.updateConnectionCount(count);
+    this.connectionMonitor.updateConnectionCount(count);
   }
 
   getProtectionStatus(): {
@@ -257,10 +201,8 @@ export class OverloadProtectionManager {
     rateLimiter: {
       activeIdentifiers: number;
     };
-    resourceMonitor: {
+    connectionMonitor: {
       status: 'healthy' | 'warning' | 'critical';
-      executionTime: number;
-      memory: number;
       connections: number;
       requests: number;
       issues: string[];
@@ -275,7 +217,7 @@ export class OverloadProtectionManager {
       rateLimiter: {
         activeIdentifiers: this.rateLimiter['requests'].size
       },
-      resourceMonitor: this.resourceMonitor.getHealthStatus(),
+      connectionMonitor: this.connectionMonitor.getHealthStatus(),
       isShuttingDown: this.isShuttingDown
     };
   }
@@ -286,7 +228,7 @@ export class OverloadProtectionManager {
   }
 
   isSystemHealthy(): boolean {
-    const health = this.resourceMonitor.getHealthStatus();
+    const health = this.connectionMonitor.getHealthStatus();
     return health.status === 'healthy' && 
            this.circuitBreaker.getState() === 'CLOSED' && 
            !this.isShuttingDown;

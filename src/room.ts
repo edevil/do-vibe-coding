@@ -15,6 +15,7 @@ export class Room {
   private isHibernating: boolean = false;
   private typingUsers: Set<string> = new Set();
   private presenceUpdateInterval: number | null = null;
+  private messageRateLimits: Map<string, number[]> = new Map(); // userId -> timestamp array
 
   constructor(state: DurableObjectState, env: any) {
     this.state = state;
@@ -109,6 +110,24 @@ export class Room {
         await this.broadcastPresenceUpdate();
       }
     }
+  }
+
+  private isMessageRateLimited(userId: string): boolean {
+    const now = Date.now();
+    const timeWindow = 60000; // 1 minute
+    const maxMessages = 20; // 20 messages per minute
+    
+    const userMessages = this.messageRateLimits.get(userId) || [];
+    const recentMessages = userMessages.filter(timestamp => now - timestamp < timeWindow);
+    
+    if (recentMessages.length >= maxMessages) {
+      return true;
+    }
+    
+    recentMessages.push(now);
+    this.messageRateLimits.set(userId, recentMessages);
+    
+    return false;
   }
 
   private async handleTypingStart(userId: string): Promise<void> {
@@ -268,69 +287,83 @@ export class Room {
       return new Response('Missing required parameters', { status: 400 });
     }
     
-    this.roomId = roomId;
+    // Apply overload protection to WebSocket connections
+    try {
+      return await this.overloadProtection.executeWithProtection(userId, async () => {
+        this.roomId = roomId;
+        
+        if (this.sessions.size >= this.maxCapacity) {
+          throw new Error('Room at capacity');
+        }
     
-    if (this.sessions.size >= this.maxCapacity) {
-      return new Response('Room at capacity', { status: 503 });
+        // Wake from hibernation if needed
+        if (this.isHibernating) {
+          console.log(`Room ${this.roomId} waking from hibernation`);
+          this.isHibernating = false;
+        }
+        
+        const pair = new WebSocketPair();
+        const [client, server] = Object.values(pair);
+        
+        // Create metadata for hibernation
+        const metadata: WebSocketMetadata = {
+          userId,
+          username,
+          roomId,
+          connectedAt: Date.now()
+        };
+        
+        // Use hibernation API instead of server.accept()
+        this.state.acceptWebSocket?.(server, [userId, JSON.stringify(metadata)]);
+        
+        const session: WebSocketSession = {
+          websocket: server,
+          userId,
+          username,
+          roomId,
+          lastPing: Date.now(),
+          connectedAt: metadata.connectedAt
+        };
+        
+        this.sessions.set(userId, session);
+        this.overloadProtection.updateConnectionCount(this.sessions.size);
+        
+        const now = Date.now();
+        const user: User = {
+          id: userId,
+          username,
+          connectedAt: now,
+          lastSeen: now,
+          status: 'online',
+          isTyping: false
+        };
+        this.users.set(userId, user);
+        
+        // Persist user list
+        await this.saveUsers();
+        
+        this.broadcastUserJoined(user);
+        this.sendRecentMessages(server);
+        await this.updateActivity();
+        
+        // Send current user list to new user
+        await this.broadcastPresenceUpdate();
+        
+        return new Response(null, {
+          status: 101,
+          webSocket: client
+        });
+      });
+    } catch (error) {
+      console.error('WebSocket connection rejected by overload protection:', error);
+      return new Response(JSON.stringify({
+        error: 'Connection rejected',
+        message: error.message || 'Server is currently overloaded'
+      }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
-    
-    // Wake from hibernation if needed
-    if (this.isHibernating) {
-      console.log(`Room ${this.roomId} waking from hibernation`);
-      this.isHibernating = false;
-    }
-    
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
-    
-    // Create metadata for hibernation
-    const metadata: WebSocketMetadata = {
-      userId,
-      username,
-      roomId,
-      connectedAt: Date.now()
-    };
-    
-    // Use hibernation API instead of server.accept()
-    this.state.acceptWebSocket?.(server, [userId, JSON.stringify(metadata)]);
-    
-    const session: WebSocketSession = {
-      websocket: server,
-      userId,
-      username,
-      roomId,
-      lastPing: Date.now(),
-      connectedAt: metadata.connectedAt
-    };
-    
-    this.sessions.set(userId, session);
-    this.overloadProtection.updateConnectionCount(this.sessions.size);
-    
-    const now = Date.now();
-    const user: User = {
-      id: userId,
-      username,
-      connectedAt: now,
-      lastSeen: now,
-      status: 'online',
-      isTyping: false
-    };
-    this.users.set(userId, user);
-    
-    // Persist user list
-    await this.saveUsers();
-    
-    this.broadcastUserJoined(user);
-    this.sendRecentMessages(server);
-    await this.updateActivity();
-    
-    // Send current user list to new user
-    await this.broadcastPresenceUpdate();
-    
-    return new Response(null, {
-      status: 101,
-      webSocket: client
-    });
   }
 
   private async handleJoin(request: Request): Promise<Response> {
@@ -387,16 +420,23 @@ export class Room {
 
   private async handleMessage(userId: string, data: string): Promise<void> {
     try {
-      const parsedData = JSON.parse(data);
-      const session = this.sessions.get(userId);
-      
-      if (!session) {
-        console.error('Session not found for user:', userId);
-        return;
-      }
-      
-      // Update user activity for any message
-      await this.updateUserActivity(userId);
+      // Apply overload protection to message handling
+      await this.overloadProtection.executeWithProtection(userId, async () => {
+        // Check message size limit (10KB)
+        if (data.length > 10240) {
+          throw new Error('Message too large');
+        }
+        
+        const parsedData = JSON.parse(data);
+        const session = this.sessions.get(userId);
+        
+        if (!session) {
+          console.error('Session not found for user:', userId);
+          return;
+        }
+        
+        // Update user activity for any message
+        await this.updateUserActivity(userId);
       
       if (parsedData.type === 'ping') {
         session.lastPing = Date.now();
@@ -405,6 +445,11 @@ export class Room {
       }
       
       if (parsedData.type === 'message') {
+        // Check message rate limit
+        if (this.isMessageRateLimited(userId)) {
+          throw new Error('Message rate limit exceeded (20 messages per minute)');
+        }
+        
         // Stop typing when user sends message
         await this.handleTypingStop(userId);
         
@@ -441,11 +486,25 @@ export class Room {
         }
       }
       
-      if (parsedData.type === 'requestUserList') {
-        await this.broadcastPresenceUpdate();
-      }
+        if (parsedData.type === 'requestUserList') {
+          await this.broadcastPresenceUpdate();
+        }
+      });
     } catch (error) {
       console.error('Error handling message:', error);
+      
+      // Send error response to client
+      const session = this.sessions.get(userId);
+      if (session && session.websocket) {
+        try {
+          session.websocket.send(JSON.stringify({
+            type: 'error',
+            content: error.message || 'Request rejected due to overload protection'
+          }));
+        } catch (sendError) {
+          console.error('Failed to send error message:', sendError);
+        }
+      }
     }
   }
 
@@ -681,6 +740,24 @@ export class Room {
       if (now - session.lastPing > staleTimeout) {
         console.log('Cleaning up stale session:', userId);
         await this.handleDisconnect(userId);
+      }
+    }
+    
+    // Clean up old message rate limit entries
+    this.cleanupMessageRateLimits();
+  }
+
+  private cleanupMessageRateLimits(): void {
+    const now = Date.now();
+    const timeWindow = 60000; // 1 minute
+    
+    for (const [userId, timestamps] of this.messageRateLimits.entries()) {
+      const recentMessages = timestamps.filter(timestamp => now - timestamp < timeWindow);
+      
+      if (recentMessages.length === 0) {
+        this.messageRateLimits.delete(userId);
+      } else {
+        this.messageRateLimits.set(userId, recentMessages);
       }
     }
   }

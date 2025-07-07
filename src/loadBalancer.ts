@@ -1,4 +1,5 @@
 import { RoomStats, LoadBalancerStats } from './types';
+import { OverloadProtectionManager } from './overloadProtection';
 
 export class LoadBalancer {
   private state: DurableObjectState;
@@ -8,10 +9,12 @@ export class LoadBalancer {
   private statsUpdateInterval: number = 5000; // 5 seconds
   private maxRoomsPerInstance: number = 10;
   private maxUsersPerRoom: number = 100;
+  private overloadProtection: OverloadProtectionManager;
 
   constructor(state: DurableObjectState, env: any) {
     this.state = state;
     this.env = env;
+    this.overloadProtection = new OverloadProtectionManager();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -52,54 +55,51 @@ export class LoadBalancer {
     
     console.log('Assignment params:', { roomId, userId, username });
     
-    await this.refreshRoomStats();
-    
-    const targetRoomId = this.selectOptimalRoom(roomId);
-    
-    if (!targetRoomId) {
+    // Apply overload protection to room assignment
+    try {
+      return await this.overloadProtection.executeWithProtection(userId, async () => {
+        await this.refreshRoomStats();
+        
+        const targetRoomId = this.selectOptimalRoom(roomId);
+        
+        if (!targetRoomId) {
+          throw new Error('No available rooms');
+        }
+        
+        const roomObjectId = this.env.ROOMS.idFromName(targetRoomId);
+        const roomObject = this.env.ROOMS.get(roomObjectId);
+        
+        const upgradeHeader = request.headers.get('Upgrade');
+        if (upgradeHeader !== 'websocket') {
+          return new Response('Expected Upgrade: websocket', { status: 426 });
+        }
+        
+        const url = new URL(request.url);
+        url.pathname = '/websocket';
+        url.searchParams.set('userId', userId);
+        url.searchParams.set('username', username);
+        url.searchParams.set('roomId', targetRoomId);
+        
+        const roomRequest = new Request(url.toString(), {
+          method: 'GET',
+          headers: request.headers
+        });
+        
+        const response = await roomObject.fetch(roomRequest);
+        
+        if (response.status === 101) {
+          this.updateRoomUserCount(targetRoomId, 1);
+        }
+        
+        return response;
+      });
+    } catch (error) {
+      console.error('Room assignment rejected by overload protection:', error);
       return new Response(JSON.stringify({
-        error: 'No available rooms',
-        message: 'All rooms are at capacity'
+        error: 'Assignment rejected',
+        message: error.message || 'Load balancer is currently overloaded'
       }), {
         status: 503,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-    
-    const roomObjectId = this.env.ROOMS.idFromName(targetRoomId);
-    const roomObject = this.env.ROOMS.get(roomObjectId);
-    
-    const upgradeHeader = request.headers.get('Upgrade');
-    if (upgradeHeader !== 'websocket') {
-      return new Response('Expected Upgrade: websocket', { status: 426 });
-    }
-    
-    const url = new URL(request.url);
-    url.pathname = '/websocket';
-    url.searchParams.set('userId', userId);
-    url.searchParams.set('username', username);
-    url.searchParams.set('roomId', targetRoomId);
-    
-    const roomRequest = new Request(url.toString(), {
-      method: 'GET',
-      headers: request.headers
-    });
-    
-    try {
-      const response = await roomObject.fetch(roomRequest);
-      
-      if (response.status === 101) {
-        this.updateRoomUserCount(targetRoomId, 1);
-      }
-      
-      return response;
-    } catch (error) {
-      console.error('Error connecting to room:', error);
-      return new Response(JSON.stringify({
-        error: 'Failed to connect to room',
-        message: 'Internal server error'
-      }), {
-        status: 500,
         headers: { 'Content-Type': 'application/json' }
       });
     }
