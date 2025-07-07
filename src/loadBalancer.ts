@@ -114,7 +114,7 @@ export class LoadBalancer {
       console.error('Room assignment rejected by overload protection:', error);
       return new Response(JSON.stringify({
         error: 'Assignment rejected',
-        message: error.message || 'Load balancer is currently overloaded'
+        message: error instanceof Error ? error.message : 'Load balancer is currently overloaded'
       }), {
         status: 503,
         headers: { 'Content-Type': 'application/json' }

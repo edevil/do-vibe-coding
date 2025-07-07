@@ -422,7 +422,7 @@ export class Room {
       console.error('WebSocket connection rejected by overload protection:', error);
       return new Response(JSON.stringify({
         error: 'Connection rejected',
-        message: error.message || 'Server is currently overloaded'
+        message: error instanceof Error ? error.message : 'Server is currently overloaded'
       }), {
         status: 503,
         headers: { 'Content-Type': 'application/json' }
@@ -563,7 +563,7 @@ export class Room {
         try {
           session.websocket.send(JSON.stringify({
             type: 'error',
-            content: error.message || 'Request rejected due to overload protection'
+            content: error instanceof Error ? error.message : 'Request rejected due to overload protection'
           }));
         } catch (sendError) {
           console.error('Failed to send error message:', sendError);
