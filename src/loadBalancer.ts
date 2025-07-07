@@ -32,6 +32,9 @@ export class LoadBalancer {
     this.state = state;
     this.env = env;
     this.overloadProtection = new OverloadProtectionManager();
+    
+    // Start cleanup scheduler to prevent memory leaks
+    this.scheduleCleanup();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -48,6 +51,18 @@ export class LoadBalancer {
     
     if (request.method === 'POST' && url.pathname === '/update-stats') {
       return this.handleUpdateStats(request);
+    }
+    
+    if (request.method === 'GET' && url.pathname === '/health') {
+      return this.handleHealthCheck();
+    }
+    
+    if (request.method === 'GET' && url.pathname === '/metrics') {
+      return this.handleMetrics();
+    }
+    
+    if (request.method === 'POST' && url.pathname === '/shutdown') {
+      return this.handleShutdown();
     }
     
     console.log('LoadBalancer: No route matched, returning 404');
@@ -175,57 +190,102 @@ export class LoadBalancer {
     });
   }
 
-  private selectOptimalRoom(preferredRoomId: string): string | null {
-    const now = Date.now();
+  /**
+   * Health check endpoint that returns system health status.
+   * Used for monitoring and load balancer health checks.
+   */
+  private async handleHealthCheck(): Promise<Response> {
+    const protectionStatus = this.overloadProtection.getProtectionStatus();
+    const isHealthy = this.overloadProtection.isSystemHealthy();
     
-    if (preferredRoomId) {
-      const preferredRoom = this.roomStats.get(preferredRoomId);
-      if (preferredRoom && !this.isRoomOverloaded(preferredRoom)) {
-        return preferredRoomId;
+    const health = {
+      status: isHealthy ? 'healthy' : 'unhealthy',
+      timestamp: new Date().toISOString(),
+      loadBalancer: {
+        totalRooms: this.roomStats.size,
+        totalUsers: Array.from(this.roomStats.values()).reduce((sum, room) => sum + room.userCount, 0),
+        overloadedRooms: Array.from(this.roomStats.values()).filter(room => room.isOverloaded).length
+      },
+      protection: protectionStatus,
+      uptime: Date.now() - this.lastStatsUpdate
+    };
+    
+    return new Response(JSON.stringify(health), {
+      status: isHealthy ? 200 : 503,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  /**
+   * Metrics endpoint that returns detailed load metrics.
+   * Used for monitoring dashboards and performance analysis.
+   */
+  private async handleMetrics(): Promise<Response> {
+    await this.refreshRoomStats();
+    
+    const loadMetrics = this.getRoomLoadMetrics();
+    const protectionStatus = this.overloadProtection.getProtectionStatus();
+    
+    const metrics = {
+      timestamp: new Date().toISOString(),
+      loadMetrics,
+      protection: protectionStatus,
+      rooms: Object.fromEntries(this.roomStats.entries()),
+      system: {
+        totalRooms: this.roomStats.size,
+        totalUsers: Array.from(this.roomStats.values()).reduce((sum, room) => sum + room.userCount, 0),
+        averageRoomSize: this.roomStats.size > 0 ? 
+          Array.from(this.roomStats.values()).reduce((sum, room) => sum + room.userCount, 0) / this.roomStats.size : 0,
+        oldestRoom: this.roomStats.size > 0 ? 
+          Math.min(...Array.from(this.roomStats.values()).map(room => room.lastActivity)) : 0
       }
-    }
+    };
     
-    const availableRooms = Array.from(this.roomStats.entries())
-      .filter(([_, room]) => !this.isRoomOverloaded(room))
-      .sort((a, b) => a[1].userCount - b[1].userCount);
-    
-    if (availableRooms.length > 0) {
-      return availableRooms[0][0];
-    }
-    
-    if (this.roomStats.size < this.maxRoomsPerInstance) {
-      const newRoomId = preferredRoomId || this.generateRoomId();
-      
-      const newRoom: RoomStats = {
-        id: newRoomId,
-        userCount: 0,
-        maxCapacity: this.maxUsersPerRoom,
-        isOverloaded: false,
-        lastActivity: now
-      };
-      
-      this.roomStats.set(newRoomId, newRoom);
-      return newRoomId;
-    }
-    
-    return null;
+    return new Response(JSON.stringify(metrics), {
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
-  private isRoomOverloaded(room: RoomStats): boolean {
-    const capacityThreshold = room.maxCapacity * 0.9; // 90% capacity threshold
-    return room.userCount >= capacityThreshold || room.isOverloaded;
+  /**
+   * Handles graceful shutdown requests.
+   * Initiates shutdown process and notifies all rooms.
+   */
+  private async handleShutdown(): Promise<Response> {
+    console.log('LoadBalancer: Graceful shutdown initiated');
+    
+    // Initiate shutdown in overload protection
+    this.overloadProtection.initiateGracefulShutdown();
+    
+    // Notify all active rooms to prepare for shutdown
+    const shutdownPromises = Array.from(this.roomStats.keys()).map(async (roomId) => {
+      try {
+        const roomObjectId = this.env.ROOMS.idFromName(roomId);
+        const roomObject = this.env.ROOMS.get(roomObjectId);
+        
+        // Send shutdown signal to room
+        await roomObject.fetch(new Request('https://room/shutdown', {
+          method: 'POST'
+        }));
+      } catch (error) {
+        console.error(`Failed to notify room ${roomId} of shutdown:`, error);
+      }
+    });
+    
+    // Wait for all rooms to acknowledge shutdown (with timeout)
+    await Promise.allSettled(shutdownPromises);
+    
+    const shutdownStatus = {
+      status: 'shutdown_initiated',
+      timestamp: new Date().toISOString(),
+      roomsNotified: this.roomStats.size,
+      message: 'Graceful shutdown in progress'
+    };
+    
+    return new Response(JSON.stringify(shutdownStatus), {
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
-  private generateRoomId(): string {
-    const adjectives = ['swift', 'bright', 'calm', 'bold', 'cool', 'wise', 'kind'];
-    const nouns = ['river', 'mountain', 'forest', 'ocean', 'valley', 'peak', 'meadow'];
-    
-    const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
-    const noun = nouns[Math.floor(Math.random() * nouns.length)];
-    const number = Math.floor(Math.random() * 1000);
-    
-    return `${adjective}-${noun}-${number}`;
-  }
 
   private async refreshRoomStats(): Promise<void> {
     const now = Date.now();

@@ -334,6 +334,10 @@ export class Room {
       return this.handleHibernation();
     }
     
+    if (request.method === 'POST' && url.pathname === '/shutdown') {
+      return this.handleShutdown();
+    }
+    
     return new Response('Not Found', { status: 404 });
   }
 
@@ -694,6 +698,66 @@ export class Room {
     }
     
     return new Response(JSON.stringify({ hibernated: false, activeUsers: this.sessions.size }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  /**
+   * Handles graceful shutdown requests from LoadBalancer.
+   * Notifies all connected users and prepares for shutdown.
+   */
+  private async handleShutdown(): Promise<Response> {
+    console.log(`Room ${this.roomId}: Graceful shutdown initiated`);
+    
+    // Initiate shutdown in overload protection
+    this.overloadProtection.initiateGracefulShutdown();
+    
+    // Notify all connected users about impending shutdown
+    const shutdownMessage: Message = {
+      id: crypto.randomUUID(),
+      roomId: this.roomId,
+      userId: 'system',
+      username: 'System',
+      content: 'Server is shutting down gracefully. Please reconnect in a few moments.',
+      timestamp: Date.now(),
+      type: 'message'
+    };
+    
+    this.broadcastMessage(shutdownMessage);
+    
+    // Save final state before shutdown
+    await this.saveMessages();
+    await this.saveUsers();
+    await this.saveRoomData();
+    
+    // Clear all timers
+    if (this.hibernationTimeout) {
+      clearTimeout(this.hibernationTimeout);
+      this.hibernationTimeout = null;
+    }
+    
+    if (this.presenceUpdateInterval) {
+      clearInterval(this.presenceUpdateInterval);
+      this.presenceUpdateInterval = null;
+    }
+    
+    // Clear all user typing timeouts
+    for (const user of this.users.values()) {
+      if (user.typingTimeout) {
+        clearTimeout(user.typingTimeout);
+        user.typingTimeout = undefined;
+      }
+    }
+    
+    const shutdownStatus = {
+      status: 'shutdown_prepared',
+      roomId: this.roomId,
+      connectedUsers: this.sessions.size,
+      timestamp: new Date().toISOString(),
+      message: 'Room prepared for shutdown'
+    };
+    
+    return new Response(JSON.stringify(shutdownStatus), {
       headers: { 'Content-Type': 'application/json' }
     });
   }

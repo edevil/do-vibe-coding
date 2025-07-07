@@ -94,13 +94,6 @@ export class RateLimiter {
     return true;
   }
 
-  getRequestCount(identifier: string): number {
-    const now = Date.now();
-    const windowStart = now - this.windowMs;
-    const requestTimes = this.requests.get(identifier) || [];
-    
-    return requestTimes.filter(time => time > windowStart).length;
-  }
 
   cleanup(): void {
     const now = Date.now();
@@ -163,9 +156,6 @@ export class ConnectionMonitor {
     };
   }
 
-  reset(): void {
-    this.requestCount = 0;
-  }
 }
 
 /**
