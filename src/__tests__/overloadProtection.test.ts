@@ -3,7 +3,6 @@ import {
   CircuitBreaker, 
   RateLimiter, 
   ConnectionMonitor, 
-  MessageSizeValidator, 
   OverloadProtectionManager 
 } from '../overloadProtection';
 import { waitFor } from '../test-utils';

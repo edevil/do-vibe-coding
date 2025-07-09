@@ -1,4 +1,5 @@
-import { Message, User, WebSocketSession, WebSocketMetadata } from './types';
+import { DurableObject } from 'cloudflare:workers';
+import { Message, User, WebSocketSession, WebSocketMetadata, Env } from './types';
 import { OverloadProtectionManager } from './overloadProtection';
 
 /**
@@ -13,10 +14,10 @@ import { OverloadProtectionManager } from './overloadProtection';
  * - Rate limiting and overload protection
  * - Automatic hibernation when inactive
  */
-export class Room {
+export class Room extends DurableObject {
   // Core Durable Object state and environment
   private state: DurableObjectState;
-  private env: any;
+  protected env: Env;
   
   // Active connections and user tracking
   private sessions: Map<string, WebSocketSession> = new Map(); // Active WebSocket connections
@@ -32,15 +33,16 @@ export class Room {
   private overloadProtection: OverloadProtectionManager; // Rate limiting and circuit breaker
   
   // Hibernation management
-  private hibernationTimeout: number | null = null; // Timer for entering hibernation
+  private hibernationTimeout: ReturnType<typeof setTimeout> | null = null; // Timer for entering hibernation
   private isHibernating: boolean = false; // Current hibernation state
   
   // Real-time features
   private typingUsers: Set<string> = new Set(); // Users currently typing
-  private presenceUpdateInterval: number | null = null; // Periodic presence check timer
+  private presenceUpdateInterval: ReturnType<typeof setInterval> | null = null; // Periodic presence check timer
   private messageRateLimits: Map<string, number[]> = new Map(); // Per-user message timestamps for rate limiting
 
-  constructor(state: DurableObjectState, env: any) {
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env);
     this.state = state;
     this.env = env;
     this.overloadProtection = new OverloadProtectionManager();
@@ -252,7 +254,7 @@ export class Room {
       // Load room metadata
       const roomData = await this.state.storage.get('roomData');
       if (roomData) {
-        const data = roomData as any;
+        const data = roomData as { roomId?: string; maxCapacity?: number; lastActivity?: number };
         this.roomId = data.roomId || '';
         this.maxCapacity = data.maxCapacity || 100;
         this.lastActivity = data.lastActivity || Date.now();
@@ -326,13 +328,6 @@ export class Room {
       return this.handleJoin(request);
     }
     
-    if (request.method === 'GET' && url.pathname === '/stats') {
-      return this.handleStats();
-    }
-    
-    if (request.method === 'POST' && url.pathname === '/hibernate') {
-      return this.handleHibernation();
-    }
     
     return new Response('Not Found', { status: 404 });
   }
@@ -467,22 +462,60 @@ export class Room {
     return this.handleWebSocket(newRequest);
   }
 
-  private async handleStats(): Promise<Response> {
-    return new Response(JSON.stringify({
+  // RPC Methods - can be called directly without HTTP requests
+  
+  /**
+   * Get room statistics via RPC
+   * @returns Room statistics object
+   */
+  public getStats() {
+    const stats = {
       roomId: this.roomId,
       userCount: this.sessions.size,
       maxCapacity: this.maxCapacity,
       isOverloaded: this.sessions.size > this.maxCapacity * 0.8,
       lastActivity: this.lastActivity,
-      users: Array.from(this.users.values()),
+      users: Array.from(this.users.values()).map(user => ({
+        id: user.id,
+        username: user.username,
+        connectedAt: user.connectedAt,
+        lastSeen: user.lastSeen,
+        status: user.status,
+        isTyping: user.isTyping
+        // Exclude typingTimeout as it's not JSON-serializable
+      })),
       messageCount: this.messages.length,
       isHibernating: this.isHibernating,
       persistedMessages: this.messages.length,
       activeConnections: this.sessions.size
-    }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
+    };
+    
+    // Ensure all data is JSON-serializable
+    return JSON.parse(JSON.stringify(stats));
   }
+
+  /**
+   * Trigger hibernation via RPC
+   * @returns Success status
+   */
+  public async hibernate() {
+    await this.scheduleHibernation();
+    return { success: true, hibernating: this.isHibernating };
+  }
+
+  /**
+   * Get room health status via RPC
+   * @returns Health information
+   */
+  public getHealth() {
+    return {
+      status: this.isHibernating ? 'hibernating' : 'active',
+      userCount: this.sessions.size,
+      isOverloaded: this.sessions.size > this.maxCapacity * 0.8,
+      timestamp: new Date().toISOString()
+    };
+  }
+
 
   private async handleMessage(userId: string, data: string): Promise<void> {
     try {
@@ -685,18 +718,6 @@ export class Room {
     }
   }
 
-  private async handleHibernation(): Promise<Response> {
-    if (this.sessions.size === 0) {
-      await this.scheduleHibernation();
-      return new Response(JSON.stringify({ hibernated: true }), {
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-    
-    return new Response(JSON.stringify({ hibernated: false, activeUsers: this.sessions.size }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
 
 
   // Alarm handler for scheduled tasks

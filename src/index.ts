@@ -1,17 +1,12 @@
 import { Room } from './room';
 import { LoadBalancer } from './loadBalancer';
+import { Env } from './types';
+
+type StatsValue = string | number | boolean | object | null;
 
 // Export Durable Object classes for Cloudflare Workers
 export { Room, LoadBalancer };
 
-/**
- * Environment bindings for Cloudflare Workers.
- * These are configured in wrangler.toml and provide access to Durable Objects.
- */
-export interface Env {
-  ROOMS: DurableObjectNamespace; // Room Durable Object namespace
-  LOAD_BALANCER: DurableObjectNamespace; // LoadBalancer Durable Object namespace
-}
 
 /**
  * Main Cloudflare Worker entry point.
@@ -24,8 +19,8 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     
-    // Serve the chat application frontend
-    if (url.pathname === '/') {
+    // Serve the chat application frontend for root and any path without extension
+    if (url.pathname === '/' || (!url.pathname.includes('.') && !url.pathname.startsWith('/api') && url.pathname !== '/ws')) {
       return new Response(getHTML(), {
         headers: { 'Content-Type': 'text/html' }
       });
@@ -37,22 +32,22 @@ export default {
     }
     
     // Provide system statistics for monitoring
-    if (url.pathname === '/api/stats') {
+    if (url.pathname === '/api/stats' && request.method === 'GET') {
       return handleStats(env);
     }
     
     // Provide room list for UI
-    if (url.pathname === '/api/rooms') {
+    if (url.pathname === '/api/rooms' && request.method === 'GET') {
       return handleRoomList(env);
     }
     
     // System health check endpoint
-    if (url.pathname === '/api/health') {
+    if (url.pathname === '/api/health' && request.method === 'GET') {
       return handleHealthCheck(env);
     }
     
     // Detailed metrics endpoint
-    if (url.pathname === '/api/metrics') {
+    if (url.pathname === '/api/metrics' && request.method === 'GET') {
       return handleMetrics(env);
     }
     
@@ -135,8 +130,18 @@ async function handleStats(env: Env): Promise<Response> {
   const loadBalancerId = env.LOAD_BALANCER.idFromName('singleton');
   const loadBalancer = env.LOAD_BALANCER.get(loadBalancerId);
   
-  const response = await loadBalancer.fetch(new Request('https://loadbalancer/stats'));
-  return response;
+  // Use RPC call instead of fetch
+  interface LoadBalancerStatsRPC extends DurableObjectStub {
+    getStats(): Promise<Record<string, StatsValue>>;
+  }
+  const stats = await (loadBalancer as LoadBalancerStatsRPC).getStats();
+  
+  // Ensure proper serialization by creating a clean object
+  const serializedStats = JSON.parse(JSON.stringify(stats));
+  
+  return new Response(JSON.stringify(serializedStats), {
+    headers: { 'Content-Type': 'application/json' }
+  });
 }
 
 /**
@@ -150,16 +155,21 @@ async function handleRoomList(env: Env): Promise<Response> {
   const loadBalancerId = env.LOAD_BALANCER.idFromName('singleton');
   const loadBalancer = env.LOAD_BALANCER.get(loadBalancerId);
   
-  // Get stats which contain room information
-  const response = await loadBalancer.fetch(new Request('https://loadbalancer/stats'));
-  const stats = await response.json() as any;
+  // Get stats which contain room information via RPC
+  interface LoadBalancerRoomStatsRPC extends DurableObjectStub {
+    getStats(): Promise<{ roomStats?: Record<string, { userCount?: number }> }>;
+  }
+  const stats = await (loadBalancer as LoadBalancerRoomStatsRPC).getStats();
+  
+  // Ensure proper serialization by creating a clean object
+  const serializedStats = JSON.parse(JSON.stringify(stats)) as { roomStats?: Record<string, { userCount?: number }> };
   
   // Transform room stats into a simplified room list
-  const rooms = Object.entries(stats.roomStats || {}).map(([roomId, roomData]: [string, any]) => ({
+  const rooms = Object.entries(serializedStats.roomStats || {}).map(([roomId, roomData]: [string, { userCount?: number }]) => ({
     id: roomId,
     name: roomId.charAt(0).toUpperCase() + roomId.slice(1), // Capitalize first letter
     userCount: roomData.userCount || 0,
-    isActive: roomData.userCount > 0
+    isActive: (roomData.userCount || 0) > 0
   }));
   
   // Add some default/popular rooms if no rooms exist
@@ -188,8 +198,18 @@ async function handleHealthCheck(env: Env): Promise<Response> {
   const loadBalancer = env.LOAD_BALANCER.get(loadBalancerId);
   
   try {
-    const response = await loadBalancer.fetch(new Request('https://loadbalancer/health'));
-    return response;
+    // Use RPC call instead of fetch
+    interface LoadBalancerHealthRPC extends DurableObjectStub {
+      getHealth(): Promise<Record<string, StatsValue>>;
+    }
+    const health = await (loadBalancer as LoadBalancerHealthRPC).getHealth();
+    
+    // Ensure proper serialization by creating a clean object
+    const serializedHealth = JSON.parse(JSON.stringify(health));
+    
+    return new Response(JSON.stringify(serializedHealth), {
+      headers: { 'Content-Type': 'application/json' }
+    });
   } catch (error) {
     return new Response(JSON.stringify({
       status: 'error',
@@ -214,8 +234,18 @@ async function handleMetrics(env: Env): Promise<Response> {
   const loadBalancer = env.LOAD_BALANCER.get(loadBalancerId);
   
   try {
-    const response = await loadBalancer.fetch(new Request('https://loadbalancer/metrics'));
-    return response;
+    // Use RPC call instead of fetch
+    interface LoadBalancerMetricsRPC extends DurableObjectStub {
+      getMetrics(): Promise<Record<string, StatsValue>>;
+    }
+    const metrics = await (loadBalancer as LoadBalancerMetricsRPC).getMetrics();
+    
+    // Ensure proper serialization by creating a clean object
+    const serializedMetrics = JSON.parse(JSON.stringify(metrics));
+    
+    return new Response(JSON.stringify(serializedMetrics), {
+      headers: { 'Content-Type': 'application/json' }
+    });
   } catch (error) {
     return new Response(JSON.stringify({
       status: 'error',

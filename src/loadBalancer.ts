@@ -1,5 +1,13 @@
-import { RoomStats, LoadBalancerStats } from './types';
+import { DurableObject } from 'cloudflare:workers';
+import { RoomStats, LoadBalancerStats, Env } from './types';
 import { OverloadProtectionManager } from './overloadProtection';
+
+interface RoomStatsResponse {
+  userCount?: number;
+  maxCapacity?: number;
+  isOverloaded?: boolean;
+  lastActivity?: number;
+}
 
 /**
  * LoadBalancer Durable Object - Manages room assignment and capacity distribution.
@@ -11,10 +19,10 @@ import { OverloadProtectionManager } from './overloadProtection';
  * - Implements overload protection for the routing layer
  * - Provides system-wide statistics and monitoring
  */
-export class LoadBalancer {
+export class LoadBalancer extends DurableObject {
   // Core Durable Object infrastructure  
   private state: DurableObjectState;
-  private env: any;
+  protected env: Env;
   
   // Room tracking and statistics
   private roomStats: Map<string, RoomStats> = new Map(); // Real-time room metrics
@@ -28,7 +36,8 @@ export class LoadBalancer {
   // Protection systems
   private overloadProtection: OverloadProtectionManager; // Rate limiting and circuit breaker
 
-  constructor(state: DurableObjectState, env: any) {
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env);
     this.state = state;
     this.env = env;
     this.overloadProtection = new OverloadProtectionManager();
@@ -45,21 +54,6 @@ export class LoadBalancer {
       return this.handleRoomAssignment(request);
     }
     
-    if (request.method === 'GET' && url.pathname === '/stats') {
-      return this.handleGetStats();
-    }
-    
-    if (request.method === 'POST' && url.pathname === '/update-stats') {
-      return this.handleUpdateStats(request);
-    }
-    
-    if (request.method === 'GET' && url.pathname === '/health') {
-      return this.handleHealthCheck();
-    }
-    
-    if (request.method === 'GET' && url.pathname === '/metrics') {
-      return this.handleMetrics();
-    }
     
     console.log('LoadBalancer: No route matched, returning 404');
     return new Response('Not Found', { status: 404 });
@@ -144,103 +138,7 @@ export class LoadBalancer {
     }
   }
 
-  /**
-   * Handles requests for LoadBalancer statistics.
-   * Returns aggregated stats across all managed rooms.
-   * 
-   * @returns JSON response with room statistics and totals
-   */
-  private async handleGetStats(): Promise<Response> {
-    await this.refreshRoomStats();
-    
-    // Convert Map to plain object for JSON serialization
-    const roomStatsObject = Object.fromEntries(this.roomStats.entries());
-    
-    const stats = {
-      totalRooms: this.roomStats.size,
-      totalUsers: Array.from(this.roomStats.values()).reduce((sum, room) => sum + room.userCount, 0),
-      roomStats: roomStatsObject
-    };
-    
-    return new Response(JSON.stringify(stats), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
 
-  private async handleUpdateStats(request: Request): Promise<Response> {
-    const body = await request.json() as { roomId: string; userCount: number; isOverloaded: boolean };
-    const { roomId, userCount, isOverloaded } = body;
-    
-    const roomStat: RoomStats = {
-      id: roomId,
-      userCount,
-      maxCapacity: this.maxUsersPerRoom,
-      isOverloaded,
-      lastActivity: Date.now()
-    };
-    
-    this.roomStats.set(roomId, roomStat);
-    
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
-
-  /**
-   * Health check endpoint that returns system health status.
-   * Used for monitoring and load balancer health checks.
-   */
-  private async handleHealthCheck(): Promise<Response> {
-    const protectionStatus = this.overloadProtection.getProtectionStatus();
-    const isHealthy = this.overloadProtection.isSystemHealthy();
-    
-    const health = {
-      status: isHealthy ? 'healthy' : 'unhealthy',
-      timestamp: new Date().toISOString(),
-      loadBalancer: {
-        totalRooms: this.roomStats.size,
-        totalUsers: Array.from(this.roomStats.values()).reduce((sum, room) => sum + room.userCount, 0),
-        overloadedRooms: Array.from(this.roomStats.values()).filter(room => room.isOverloaded).length
-      },
-      protection: protectionStatus,
-      uptime: Date.now() - this.lastStatsUpdate
-    };
-    
-    return new Response(JSON.stringify(health), {
-      status: isHealthy ? 200 : 503,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
-
-  /**
-   * Metrics endpoint that returns detailed load metrics.
-   * Used for monitoring dashboards and performance analysis.
-   */
-  private async handleMetrics(): Promise<Response> {
-    await this.refreshRoomStats();
-    
-    const loadMetrics = this.getRoomLoadMetrics();
-    const protectionStatus = this.overloadProtection.getProtectionStatus();
-    
-    const metrics = {
-      timestamp: new Date().toISOString(),
-      loadMetrics,
-      protection: protectionStatus,
-      rooms: Object.fromEntries(this.roomStats.entries()),
-      system: {
-        totalRooms: this.roomStats.size,
-        totalUsers: Array.from(this.roomStats.values()).reduce((sum, room) => sum + room.userCount, 0),
-        averageRoomSize: this.roomStats.size > 0 ? 
-          Array.from(this.roomStats.values()).reduce((sum, room) => sum + room.userCount, 0) / this.roomStats.size : 0,
-        oldestRoom: this.roomStats.size > 0 ? 
-          Math.min(...Array.from(this.roomStats.values()).map(room => room.lastActivity)) : 0
-      }
-    };
-    
-    return new Response(JSON.stringify(metrics), {
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
 
 
 
@@ -257,21 +155,21 @@ export class LoadBalancer {
         const roomObjectId = this.env.ROOMS.idFromName(roomId);
         const roomObject = this.env.ROOMS.get(roomObjectId);
         
-        const response = await roomObject.fetch(new Request('https://room/stats'));
-        
-        if (response.ok) {
-          const stats = await response.json();
-          
-          const roomStat: RoomStats = {
-            id: roomId,
-            userCount: stats.userCount || 0,
-            maxCapacity: stats.maxCapacity || this.maxUsersPerRoom,
-            isOverloaded: stats.isOverloaded || false,
-            lastActivity: stats.lastActivity || now
-          };
-          
-          this.roomStats.set(roomId, roomStat);
+        // Use RPC call instead of fetch
+        interface RoomStatsRPC extends DurableObjectStub {
+          getStats(): RoomStatsResponse;
         }
+        const stats = await (roomObject as RoomStatsRPC).getStats();
+        
+        const roomStat: RoomStats = {
+          id: roomId,
+          userCount: stats.userCount || 0,
+          maxCapacity: stats.maxCapacity || this.maxUsersPerRoom,
+          isOverloaded: stats.isOverloaded || false,
+          lastActivity: stats.lastActivity || now
+        };
+        
+        this.roomStats.set(roomId, roomStat);
       } catch (error) {
         console.error(`Error fetching stats for room ${roomId}:`, error);
         
@@ -342,5 +240,102 @@ export class LoadBalancer {
       totalCapacity,
       utilizationRate: totalCapacity > 0 ? (totalUsers / totalCapacity) * 100 : 0
     };
+  }
+
+  // RPC Methods - can be called directly without HTTP requests
+
+  /**
+   * Get load balancer statistics via RPC
+   * @returns LoadBalancer statistics
+   */
+  public async getStats() {
+    await this.refreshRoomStats();
+    
+    // Convert Map to plain object for JSON serialization
+    const roomStatsObject = Object.fromEntries(this.roomStats.entries());
+    
+    const result = {
+      totalRooms: this.roomStats.size,
+      totalUsers: Array.from(this.roomStats.values()).reduce((sum, room) => sum + room.userCount, 0),
+      roomStats: roomStatsObject
+    };
+    
+    // Ensure JSON serialization by round-trip through JSON
+    return JSON.parse(JSON.stringify(result));
+  }
+
+  /**
+   * Get health status via RPC
+   * @returns Health information
+   */
+  public async getHealth() {
+    const protectionStatus = this.overloadProtection.getProtectionStatus();
+    const isHealthy = this.overloadProtection.isSystemHealthy();
+    
+    const result = {
+      status: isHealthy ? 'healthy' : 'unhealthy',
+      timestamp: new Date().toISOString(),
+      loadBalancer: {
+        totalRooms: this.roomStats.size,
+        totalUsers: Array.from(this.roomStats.values()).reduce((sum, room) => sum + room.userCount, 0),
+        overloadedRooms: Array.from(this.roomStats.values()).filter(room => room.isOverloaded).length
+      },
+      protection: protectionStatus,
+      uptime: Date.now() - this.lastStatsUpdate
+    };
+    
+    // Ensure JSON serialization by round-trip through JSON
+    return JSON.parse(JSON.stringify(result));
+  }
+
+  /**
+   * Get detailed metrics via RPC
+   * @returns Detailed system metrics
+   */
+  public async getMetrics() {
+    await this.refreshRoomStats();
+    
+    const loadMetrics = this.getRoomLoadMetrics();
+    const protectionStatus = this.overloadProtection.getProtectionStatus();
+    
+    const result = {
+      timestamp: new Date().toISOString(),
+      loadMetrics,
+      protection: protectionStatus,
+      rooms: Object.fromEntries(this.roomStats.entries()),
+      system: {
+        totalRooms: this.roomStats.size,
+        totalUsers: Array.from(this.roomStats.values()).reduce((sum, room) => sum + room.userCount, 0),
+        averageRoomSize: this.roomStats.size > 0 ? 
+          Array.from(this.roomStats.values()).reduce((sum, room) => sum + room.userCount, 0) / this.roomStats.size : 0,
+        utilizationRate: this.getRoomLoadMetrics().utilizationRate,
+        oldestRoom: this.roomStats.size > 0 ? 
+          Math.min(...Array.from(this.roomStats.values()).map(room => room.lastActivity)) : 0
+      }
+    };
+    
+    // Ensure JSON serialization by round-trip through JSON
+    return JSON.parse(JSON.stringify(result));
+  }
+
+  /**
+   * Update room stats via RPC
+   * @param roomId Room identifier
+   * @param userCount Current user count
+   * @param isOverloaded Whether room is overloaded
+   * @returns Success status
+   */
+  public updateStats(roomId: string, userCount: number, isOverloaded: boolean) {
+    const roomStat: RoomStats = {
+      id: roomId,
+      userCount,
+      maxCapacity: this.maxUsersPerRoom,
+      isOverloaded,
+      lastActivity: Date.now()
+    };
+    
+    this.roomStats.set(roomId, roomStat);
+    
+    return { success: true };
   }
 }

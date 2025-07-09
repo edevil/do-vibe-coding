@@ -23,7 +23,7 @@ export interface User {
   lastSeen: number; // Last activity timestamp for presence detection
   status: 'online' | 'away' | 'offline'; // Current presence status
   isTyping: boolean; // Whether user is currently typing
-  typingTimeout?: number; // Timer ID for auto-stopping typing indicator
+  typingTimeout?: ReturnType<typeof setTimeout>; // Timer ID for auto-stopping typing indicator
 }
 
 /**
@@ -70,4 +70,13 @@ export interface WebSocketMetadata {
   username: string; // Display name to restore
   roomId: string; // Room to restore session in
   connectedAt: number; // Original connection timestamp
+}
+
+/**
+ * Environment bindings for the Cloudflare Worker.
+ * Contains Durable Object bindings and other environment variables.
+ */
+export interface Env {
+  ROOMS: DurableObjectNamespace; // Room Durable Object namespace
+  LOAD_BALANCER: DurableObjectNamespace; // LoadBalancer Durable Object namespace
 }

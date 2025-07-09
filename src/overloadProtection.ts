@@ -220,15 +220,21 @@ export class OverloadProtectionManager {
     };
     isShuttingDown: boolean;
   } {
+    // Extract primitive values to ensure RPC serialization works
+    const circuitBreakerState = this.circuitBreaker.getState();
+    const circuitBreakerFailures = this.circuitBreaker.getFailureCount();
+    const rateLimiterSize = this.rateLimiter['requests'].size;
+    const connectionMonitorStatus = this.connectionMonitor.getHealthStatus();
+    
     return {
       circuitBreaker: {
-        state: this.circuitBreaker.getState(),
-        failures: this.circuitBreaker.getFailureCount()
+        state: circuitBreakerState,
+        failures: circuitBreakerFailures
       },
       rateLimiter: {
-        activeIdentifiers: this.rateLimiter['requests'].size
+        activeIdentifiers: rateLimiterSize
       },
-      connectionMonitor: this.connectionMonitor.getHealthStatus(),
+      connectionMonitor: connectionMonitorStatus,
       isShuttingDown: this.isShuttingDown
     };
   }

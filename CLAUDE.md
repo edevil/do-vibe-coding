@@ -49,6 +49,20 @@ Uses Cloudflare's hibernation API (`state.acceptWebSocket`) to maintain connecti
 - **Proper cleanup** in all event handlers to prevent interference
 - **Delayed reconnection** (250ms) for clean room switching
 
+### RPC Communication Architecture
+**Production-Ready RPC Implementation** - Durable Objects now use Cloudflare's RPC system for inter-object communication:
+- **DurableObject Extension**: Both Room and LoadBalancer classes extend `DurableObject` from `cloudflare:workers`
+- **Type-Safe RPC Calls**: All inter-object calls use strongly-typed RPC interfaces instead of HTTP fetch
+- **JSON Serialization Safety**: All RPC methods ensure proper JSON serialization via `JSON.parse(JSON.stringify())`
+- **Async/Await Pattern**: Proper async handling prevents Promise serialization issues
+- **Performance Benefits**: Direct RPC calls eliminate HTTP overhead and improve response times
+
+#### RPC Method Implementations:
+- **LoadBalancer RPC Methods**: `getStats()`, `getHealth()`, `getMetrics()`, `updateStats()`
+- **Room RPC Methods**: `getStats()`, `hibernate()`
+- **Serialization Fixes**: Non-serializable properties (like `typingTimeout`) properly excluded from responses
+- **Error Handling**: Comprehensive error handling for RPC call failures
+
 ## API Endpoints
 
 ### Public Endpoints
@@ -59,9 +73,11 @@ Uses Cloudflare's hibernation API (`state.acceptWebSocket`) to maintain connecti
 - `GET /api/health` - System health check with protection status
 - `GET /api/metrics` - **⚠️ SENSITIVE** Detailed load metrics and system performance
 
-### Internal Durable Object Endpoints
-- **LoadBalancer**: `GET /` (room assignment), `GET /stats`, `GET /health`, `GET /metrics`
-- **Room**: `GET /websocket` (WebSocket upgrade), `POST /join`, `GET /stats`, `POST /hibernate`
+### Internal Durable Object Communication
+- **LoadBalancer RPC Methods**: `getStats()`, `getHealth()`, `getMetrics()`, `updateStats()`
+- **Room RPC Methods**: `getStats()`, `hibernate()`
+- **HTTP Endpoints**: `GET /` (room assignment), `GET /websocket` (WebSocket upgrade), `POST /join`
+- **Migration Complete**: Statistics and health checks now use RPC instead of HTTP for better performance
 
 ## Known Issues Resolved
 
@@ -89,6 +105,15 @@ Uses Cloudflare's hibernation API (`state.acceptWebSocket`) to maintain connecti
 **Problem**: Multiple concurrent connections causing "Canceled" requests
 **Solution**: Connection state management with `isConnecting` flag and proper cleanup
 
+### Issue: RPC Serialization DataCloneError
+**Problem**: `DataCloneError: Could not serialize object of type "RpcProperty"` on API endpoints
+**Root Cause**: Missing `await` in `refreshRoomStats()` causing Promise objects to be stored instead of data
+**Solution**: 
+- Added proper `await` to all RPC calls in LoadBalancer methods
+- Added `JSON.parse(JSON.stringify())` to all RPC methods for serialization safety
+- Excluded non-serializable properties (like `typingTimeout`) from Room user objects
+- Updated all Durable Object classes to extend `DurableObject` from `cloudflare:workers`
+
 ## Frontend Features
 
 ### Room Management
@@ -111,7 +136,7 @@ Uses Cloudflare's hibernation API (`state.acceptWebSocket`) to maintain connecti
 - **Bindings**: `ROOMS` and `LOAD_BALANCER` Durable Object namespaces
 
 ## Development Notes
-- **TypeScript**: Full type safety with strict compilation
+- **TypeScript**: Full type safety with strict compilation - NO `any` or `unknown` types allowed
 - **Error Handling**: Comprehensive error management with user-friendly messages  
 - **Logging**: Extensive console logging for debugging (can be reduced for production)
 - **Git History**: Detailed commit messages explaining each feature and fix
@@ -119,6 +144,69 @@ Uses Cloudflare's hibernation API (`state.acceptWebSocket`) to maintain connecti
 - **Code Quality**: All unused functions removed, clean codebase with only necessary code
 - **Monitoring**: Production-ready health checks and metrics endpoints
 - **Operational**: Automatic cleanup prevents resource leaks
+
+## TypeScript Strict Typing Guidelines
+
+**IMPORTANT**: This codebase maintains strict type safety. The following types are PROHIBITED:
+
+### Prohibited Types
+- `any` - Never use `any` type for any purpose
+- `unknown` - Never use `unknown` type for any purpose
+
+### Required Practices
+- **Explicit Interfaces**: Define proper interfaces for all data structures
+- **Type Assertions**: Use explicit type assertions with proper interfaces instead of `any`
+- **Generic Functions**: Use generics with proper constraints instead of loose typing
+- **Environment Types**: Use the `Env` interface for all environment bindings
+- **Timer Types**: Use `ReturnType<typeof setTimeout>` and `ReturnType<typeof setInterval>` for timers
+- **Mock Types**: Test mocks must implement proper interfaces with type compatibility
+- **RPC Type Safety**: All Durable Object classes must extend `DurableObject` from `cloudflare:workers`
+- **RPC Interfaces**: Define strongly-typed interfaces for all RPC method calls
+- **JSON Serialization**: All RPC methods must return JSON-serializable data only
+
+### Examples of Proper Typing
+```typescript
+// ✅ Good: Explicit interface
+interface RoomData {
+  roomId: string;
+  maxCapacity: number;
+  lastActivity: number;
+}
+
+// ✅ Good: Proper type assertion
+const data = roomData as RoomData;
+
+// ✅ Good: Generic with constraints
+async function get<T>(key: string): Promise<T | undefined> {
+  return this.storageMap.get(key) as T | undefined;
+}
+
+// ✅ Good: Environment typing
+constructor(state: DurableObjectState, env: Env) {
+  this.state = state;
+  this.env = env;
+}
+
+// ✅ Good: RPC interface with proper typing
+interface LoadBalancerStatsRPC extends DurableObjectStub {
+  getStats(): Promise<Record<string, StatsValue>>;
+}
+
+// ✅ Good: RPC call with proper await and type safety
+const stats = await (loadBalancer as LoadBalancerStatsRPC).getStats();
+
+// ✅ Good: RPC method with JSON serialization safety
+public async getStats() {
+  const result = { /* ... */ };
+  return JSON.parse(JSON.stringify(result)); // Ensure JSON serializability
+}
+```
+
+### Test Mock Requirements
+- All mocks must implement proper interfaces
+- Use `as unknown as TargetType` for necessary type conversions
+- Mock methods must match exact signatures of real implementations
+- Storage mocks must handle generics properly with type assertions
 
 ## Security Considerations
 

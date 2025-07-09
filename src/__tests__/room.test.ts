@@ -3,6 +3,7 @@ import { Room } from '../room';
 import { 
   MockDurableObjectState, 
   MockWebSocket, 
+  MockEnv,
   createMockUser, 
   createMockMessage,
   createWebSocketRequest,
@@ -13,12 +14,12 @@ import {
 describe('Room Durable Object', () => {
   let room: Room;
   let mockState: MockDurableObjectState;
-  let mockEnv: any;
+  let mockEnv: MockEnv;
 
   beforeEach(() => {
     mockState = new MockDurableObjectState();
-    mockEnv = {};
-    room = new Room(mockState as any, mockEnv);
+    mockEnv = {} as MockEnv;
+    room = new Room(mockState as unknown as DurableObjectState, mockEnv);
   });
 
   describe('WebSocket Connection Handling', () => {
@@ -47,12 +48,8 @@ describe('Room Durable Object', () => {
 
   describe('Room Statistics', () => {
     it('should provide room statistics', async () => {
-      const statsRequest = createMockRequest('https://test.com/stats');
-      const response = await room.fetch(statsRequest);
+      const stats = room.getStats();
       
-      expect(response.status).toBe(200);
-      
-      const stats = await response.json();
       expect(stats).toHaveProperty('userCount');
       expect(stats).toHaveProperty('messageCount');
       expect(stats).toHaveProperty('isOverloaded');
@@ -60,9 +57,7 @@ describe('Room Durable Object', () => {
 
     it('should track user count correctly', async () => {
       // Check stats without joining (should still work)
-      const statsRequest = createMockRequest('https://test.com/stats');
-      const response = await room.fetch(statsRequest);
-      const stats = await response.json();
+      const stats = room.getStats();
       
       expect(stats.userCount).toBeGreaterThanOrEqual(0);
     });
@@ -72,21 +67,15 @@ describe('Room Durable Object', () => {
 
   describe('Hibernation', () => {
     it('should handle hibernation requests', async () => {
-      const hibernateRequest = createMockRequest('https://test.com/hibernate', {
-        method: 'POST'
-      });
-
-      const response = await room.fetch(hibernateRequest);
-      expect(response.status).toBe(200);
+      const result = await room.hibernate();
+      expect(result.success).toBe(true);
     });
   });
 
   describe('User Presence', () => {
     it('should track user presence correctly', async () => {
       // Check user presence in stats without joining
-      const statsRequest = createMockRequest('https://test.com/stats');
-      const response = await room.fetch(statsRequest);
-      const stats = await response.json();
+      const stats = room.getStats();
       
       expect(stats.userCount).toBeGreaterThanOrEqual(0);
     });

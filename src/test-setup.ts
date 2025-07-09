@@ -10,14 +10,14 @@ declare global {
     setAlarm(scheduledTime: number | Date): Promise<void>;
     getAlarm(): Promise<number | null>;
     deleteAlarm(): Promise<void>;
-    acceptWebSocket(webSocket: WebSocket, metadata?: any): void;
+    acceptWebSocket(webSocket: WebSocket, metadata?: string[]): void;
     getWebSockets(): WebSocket[];
   }
   
   interface DurableObjectNamespace {
-    idFromName(name: string): any;
-    idFromString(id: string): any;
-    get(id: any): any;
+    idFromName(name: string): DurableObjectId;
+    idFromString(id: string): DurableObjectId;
+    get(id: DurableObjectId): DurableObjectStub;
   }
 }
 
@@ -47,12 +47,14 @@ class MockWebSocket {
 }
 
 // Mock crypto for testing
-const mockCrypto = {
-  randomUUID: () => 'test-uuid-' + Math.random().toString(36).substr(2, 9),
+const mockCrypto: Crypto = {
+  randomUUID: () => 'test-uuid-' + Math.random().toString(36).substr(2, 9) as `${string}-${string}-${string}-${string}-${string}`,
   subtle: {} as SubtleCrypto,
-  getRandomValues: (array: any) => {
-    for (let i = 0; i < array.length; i++) {
-      array[i] = Math.floor(Math.random() * 256);
+  getRandomValues: <T extends ArrayBufferView | null>(array: T): T => {
+    if (array && array instanceof Uint8Array) {
+      for (let i = 0; i < array.length; i++) {
+        array[i] = Math.floor(Math.random() * 256);
+      }
     }
     return array;
   }
@@ -70,8 +72,35 @@ class MockWebSocketPair {
 }
 
 // Setup global mocks
-globalThis.WebSocket = MockWebSocket as any;
-globalThis.WebSocketPair = MockWebSocketPair as any;
+interface WebSocketConstructor {
+  new (url: string | URL, protocols?: string | string[]): WebSocket;
+  prototype: WebSocket;
+  readonly CONNECTING: 0;
+  readonly OPEN: 1;
+  readonly CLOSING: 2;
+  readonly CLOSED: 3;
+}
+globalThis.WebSocket = MockWebSocket as WebSocketConstructor;
+// MockWebSocketPair class that creates connected WebSocket pairs
+class MockWebSocketPairClass {
+  constructor() {
+    const ws1 = new MockWebSocket('');
+    const ws2 = new MockWebSocket('');
+    return [ws1, ws2];
+  }
+}
+// Add WebSocketPair to global
+(globalThis as unknown as { WebSocketPair: typeof MockWebSocketPairClass }).WebSocketPair = MockWebSocketPairClass;
+
+// Mock DurableObject for testing
+class MockDurableObject {
+  constructor(state: DurableObjectState, env: unknown) {}
+}
+
+// Mock cloudflare:workers module
+vi.mock('cloudflare:workers', () => ({
+  DurableObject: MockDurableObject
+}));
 // Don't override crypto if it already exists
 if (!globalThis.crypto) {
   globalThis.crypto = mockCrypto;
@@ -94,9 +123,27 @@ globalThis.fetch = vi.fn(() =>
 );
 
 // Mock setTimeout and clearTimeout
-globalThis.setTimeout = vi.fn((fn: Function, delay: number) => {
-  return Number(setImmediate(fn));
+interface SetTimeoutMock {
+  (fn: Function, delay: number): number;
+  __promisify__: <T = void>(delay?: number, value?: T, options?: { signal?: AbortSignal }) => Promise<T>;
+}
+// Create a proper setTimeout mock with __promisify__
+const setTimeoutMock = vi.fn((fn: Function, delay: number) => {
+  return Number(setImmediate(() => fn()));
 });
-globalThis.clearTimeout = vi.fn((id: number) => {
-  clearImmediate(id);
-});
+// Add the promisify method directly to the mock function
+const mockWithPromise = setTimeoutMock as unknown as typeof setTimeoutMock & { __promisify__: typeof setTimeout.__promisify__ };
+mockWithPromise.__promisify__ = <T = void>(delay?: number, value?: T, options?: { signal?: AbortSignal }) => 
+  Promise.resolve(value as T);
+globalThis.setTimeout = mockWithPromise as unknown as typeof setTimeout;
+interface ClearTimeoutMock {
+  (id: number | undefined): void;
+  (timeoutId: number | null): void;
+  (timeout: string | number | undefined): void;
+}
+globalThis.clearTimeout = vi.fn((id: string | number | null | undefined) => {
+  if (typeof id === 'number') {
+    // Type assertion for clearImmediate compatibility
+    clearImmediate(id as unknown as NodeJS.Immediate);
+  }
+}) as unknown as typeof clearTimeout;

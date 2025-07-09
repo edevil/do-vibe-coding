@@ -1,18 +1,126 @@
 import { vi } from 'vitest';
 import { User, Message, WebSocketSession, WebSocketMetadata } from './types';
 
+type DurableObjectJurisdiction = 'eu' | 'fedramp';
+type StorageValue = string | number | boolean | object | null;
+
+interface WebSocketRequestResponsePair {
+  request: Request;
+  response: Response;
+}
+
+interface DurableObjectTransaction {
+  get<T>(key: string): Promise<T | undefined>;
+  put<T>(key: string, value: T): Promise<void>;
+  delete(key: string): Promise<void>;
+  list<T>(options?: { prefix?: string }): Promise<Map<string, T>>;
+  rollback(): void;
+}
+
+type SqlValue = string | number | boolean | null | ArrayBuffer;
+
+interface SqlStorageResult {
+  results: SqlRow[];
+  success: boolean;
+  meta: {
+    duration: number;
+  };
+}
+
+interface SqlRow {
+  [key: string]: SqlValue;
+}
+
+interface WebSocketSerializedAttachment {
+  [key: string]: string | number | boolean | null;
+}
+
+interface DurableObjectGetOptions {
+  allowConcurrency?: boolean;
+  noCache?: boolean;
+}
+
+interface DurableObjectPutOptions {
+  allowConcurrency?: boolean;
+  allowUnconfirmed?: boolean;
+  noCache?: boolean;
+}
+
 // Mock Durable Object State
 export class MockDurableObjectState {
-  private storageMap = new Map<string, any>();
+  private storageMap = new Map<string, StorageValue>();
   private alarms = new Map<string, number>();
+
+  // Required DurableObjectState properties
+  id = { 
+    toString: () => 'mock-id',
+    equals: (other: DurableObjectId) => other.toString() === 'mock-id'
+  };
+  
+  waitUntil(promise: Promise<void>): void {
+    // Mock implementation
+  }
+  
+  blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
+    return callback();
+  }
+  
+  setWebSocketAutoResponse(requestResponsePair?: WebSocketRequestResponsePair): void {
+    // Mock implementation
+  }
+  
+  getWebSocketAutoResponse(): WebSocketRequestResponsePair | null {
+    return null;
+  }
+  
+  getWebSocketAutoResponseTimestamp(ws: WebSocket): Date | null {
+    return null;
+  }
+  
+  getTags(ws: WebSocket): string[] {
+    return [];
+  }
+  
+  abort(reason?: string): void {
+    // Mock implementation
+  }
+  
+  setHibernatableWebSocketEventTimeout(timeoutMs?: number): void {
+    // Mock implementation
+  }
+  
+  getHibernatableWebSocketEventTimeout(): number | null {
+    return null;
+  }
   
   // Add storage property that the Room class expects
   public storage = {
-    get: async <T>(key: string): Promise<T | undefined> => {
-      return this.storageMap.get(key);
+    get: async <T>(keyOrKeys: string | string[], options?: DurableObjectGetOptions): Promise<T | undefined> => {
+      if (Array.isArray(keyOrKeys)) {
+        // Handle array of keys case
+        const result = new Map<string, T>();
+        for (const key of keyOrKeys) {
+          const value = this.storageMap.get(key);
+          if (value !== undefined) {
+            result.set(key, value as T);
+          }
+        }
+        return result as T;
+      } else {
+        // Handle single key case
+        return this.storageMap.get(keyOrKeys) as T | undefined;
+      }
     },
-    put: async <T>(key: string, value: T): Promise<void> => {
-      this.storageMap.set(key, value);
+    put: async <T>(keyOrEntries: string | Record<string, T>, valueOrOptions?: T | DurableObjectPutOptions, options?: DurableObjectPutOptions): Promise<void> => {
+      if (typeof keyOrEntries === 'string') {
+        // Handle single key-value case
+        this.storageMap.set(keyOrEntries, valueOrOptions as StorageValue);
+      } else {
+        // Handle multiple entries case
+        for (const [key, value] of Object.entries(keyOrEntries)) {
+          this.storageMap.set(key, value as StorageValue);
+        }
+      }
     },
     delete: async (key: string): Promise<void> => {
       this.storageMap.delete(key);
@@ -21,7 +129,7 @@ export class MockDurableObjectState {
       const result = new Map<string, T>();
       for (const [key, value] of this.storageMap) {
         if (!options?.prefix || key.startsWith(options.prefix)) {
-          result.set(key, value);
+          result.set(key, value as T);
         }
       }
       return result;
@@ -34,15 +142,40 @@ export class MockDurableObjectState {
     },
     deleteAlarm: async (): Promise<void> => {
       this.alarms.delete('alarm');
+    },
+    // Add missing DurableObjectStorage methods
+    deleteAll: async (): Promise<void> => {
+      this.storageMap.clear();
+    },
+    transaction: async <T>(closure: (txn: DurableObjectTransaction) => Promise<T>): Promise<T> => {
+      // Mock transaction - just execute the closure
+      const mockTxn = {} as DurableObjectTransaction;
+      return await closure(mockTxn);
+    },
+    sync: async (): Promise<void> => {
+      // Mock sync - no-op
+    },
+    sql: {
+      exec: async (query: string, ...params: SqlValue[]): Promise<SqlStorageResult> => {
+        return { results: [], success: true, meta: { duration: 0 } };
+      }
+    },
+    getCurrentBookmark: (): string | null => null,
+    getBookmarkForTime: (timestamp: number): string | null => null,
+    onNextSessionRestoreBookmark: (bookmark: string): void => {},
+    getCurrentSerial: (): number => 0,
+    transactionSync: <T>(closure: (txn: DurableObjectTransaction) => T): T => {
+      const mockTxn = {} as DurableObjectTransaction;
+      return closure(mockTxn);
     }
   };
   
   async get<T>(key: string): Promise<T | undefined> {
-    return this.storageMap.get(key);
+    return this.storageMap.get(key) as T | undefined;
   }
   
   async put<T>(key: string, value: T): Promise<void> {
-    this.storageMap.set(key, value);
+    this.storageMap.set(key, value as StorageValue);
   }
   
   async delete(key: string): Promise<void> {
@@ -53,7 +186,7 @@ export class MockDurableObjectState {
     const result = new Map<string, T>();
     for (const [key, value] of this.storageMap) {
       if (!options?.prefix || key.startsWith(options.prefix)) {
-        result.set(key, value);
+        result.set(key, value as T);
       }
     }
     return result;
@@ -72,7 +205,7 @@ export class MockDurableObjectState {
     this.alarms.delete('main');
   }
   
-  acceptWebSocket(webSocket: WebSocket, metadata?: WebSocketMetadata): void {
+  acceptWebSocket(webSocket: WebSocket, metadata?: string[]): void {
     // Mock implementation
   }
   
@@ -108,7 +241,7 @@ export class MockWebSocket {
   close(): void {
     this.readyState = 3; // CLOSED
     if (this.onclose) {
-      this.onclose({} as CloseEvent);
+      this.onclose({ type: 'close' } as CloseEvent);
     }
   }
   
@@ -123,7 +256,7 @@ export class MockWebSocket {
   
   simulateMessage(data: string): void {
     if (this.onmessage) {
-      this.onmessage({ data } as MessageEvent);
+      this.onmessage({ data, type: 'message' } as MessageEvent);
     }
   }
 }
@@ -135,7 +268,7 @@ export interface MockEnv {
 }
 
 export class MockDurableObjectNamespace {
-  private objects = new Map<string, any>();
+  private objects = new Map<string, MockDurableObjectStub>();
   
   idFromName(name: string): MockDurableObjectId {
     return new MockDurableObjectId(name);
@@ -145,11 +278,20 @@ export class MockDurableObjectNamespace {
     return new MockDurableObjectId(id);
   }
   
-  get(id: MockDurableObjectId): any {
+  get(id: MockDurableObjectId): MockDurableObjectStub {
     if (!this.objects.has(id.toString())) {
       this.objects.set(id.toString(), new MockDurableObjectStub(id));
     }
-    return this.objects.get(id.toString());
+    return this.objects.get(id.toString())!;
+  }
+  
+  // Add missing methods for DurableObjectNamespace interface
+  newUniqueId(): MockDurableObjectId {
+    return new MockDurableObjectId('unique-' + Math.random().toString(36).substr(2, 9));
+  }
+  
+  jurisdiction(jurisdiction: DurableObjectJurisdiction): MockDurableObjectNamespace {
+    return new MockDurableObjectNamespace();
   }
   
   clear(): void {
@@ -158,7 +300,7 @@ export class MockDurableObjectNamespace {
 }
 
 export class MockDurableObjectId {
-  private name: string;
+  public name: string;
   
   constructor(name: string) {
     this.name = name;
@@ -174,19 +316,21 @@ export class MockDurableObjectId {
 }
 
 export class MockDurableObjectStub {
-  private id: MockDurableObjectId;
+  public readonly id: MockDurableObjectId;
+  public readonly name?: string;
   private responses = new Map<string, Response>();
   
   constructor(id: MockDurableObjectId) {
     this.id = id;
+    this.name = id.toString();
     // Set up default responses for common endpoints
     this.setupDefaultResponses();
   }
   
   private setupDefaultResponses(): void {
-    // Default LoadBalancer responses - use 503 instead of 101 for Node.js compatibility
+    // Default LoadBalancer responses - use 200 for testing (Node.js doesn't support 101)
     this.responses.set('/', new Response(null, {
-      status: 503
+      status: 200
     }));
     
     this.responses.set('/stats', new Response(JSON.stringify({
@@ -240,6 +384,66 @@ export class MockDurableObjectStub {
   getId(): MockDurableObjectId {
     return this.id;
   }
+
+  // Mock connect method for DurableObjectStub interface
+  connect(): never {
+    throw new Error('Mock connect not implemented');
+  }
+
+  // RPC Methods for LoadBalancer DO
+  async getStats() {
+    return {
+      totalRooms: 0,
+      totalUsers: 0,
+      roomStats: {}
+    };
+  }
+
+  getHealth() {
+    return {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      loadBalancer: {
+        totalRooms: 0,
+        totalUsers: 0,
+        overloadedRooms: 0
+      },
+      protection: {
+        circuitBreaker: { state: 'CLOSED', failures: 0 },
+        rateLimiter: { activeIdentifiers: 0 },
+        connectionMonitor: { status: 'healthy', connections: 0, requests: 0, issues: [] }
+      },
+      uptime: 0
+    };
+  }
+
+  async getMetrics() {
+    return {
+      timestamp: new Date().toISOString(),
+      loadMetrics: {
+        averageLoad: 0,
+        overloadedRooms: 0,
+        totalCapacity: 0,
+        utilizationRate: 0
+      },
+      protection: {
+        circuitBreaker: { state: 'CLOSED', failures: 0 },
+        rateLimiter: { activeIdentifiers: 0 },
+        connectionMonitor: { status: 'healthy', connections: 0, requests: 0, issues: [] }
+      },
+      rooms: {},
+      system: {
+        totalRooms: 0,
+        totalUsers: 0,
+        averageRoomSize: 0,
+        utilizationRate: 0
+      }
+    };
+  }
+
+  updateStats(roomId: string, userCount: number, isOverloaded: boolean) {
+    return { success: true };
+  }
 }
 
 // Test data factories
@@ -269,8 +473,42 @@ export function createMockMessage(overrides: Partial<Message> = {}): Message {
 }
 
 export function createMockWebSocketSession(overrides: Partial<WebSocketSession> = {}): WebSocketSession {
+  // Create a proper WebSocket-like mock with all required properties
+  const mockWebSocket = new MockWebSocket('ws://test');
+  
+  // Create a complete WebSocket interface implementation
+  const completeWebSocket: WebSocket = {
+    // Copy existing MockWebSocket properties
+    url: mockWebSocket.url,
+    readyState: mockWebSocket.readyState,
+    onopen: mockWebSocket.onopen,
+    onclose: mockWebSocket.onclose,
+    onmessage: mockWebSocket.onmessage,
+    onerror: mockWebSocket.onerror,
+    send: mockWebSocket.send.bind(mockWebSocket),
+    close: mockWebSocket.close.bind(mockWebSocket),
+    
+    // Add required WebSocket properties
+    binaryType: 'blob',
+    bufferedAmount: 0,
+    extensions: '',
+    protocol: '',
+    CONNECTING: 0,
+    OPEN: 1,
+    CLOSING: 2,
+    CLOSED: 3,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => true,
+    
+    // Add Cloudflare-specific WebSocket properties
+    accept: (): void => {},
+    serializeAttachment: (attachment: WebSocketSerializedAttachment): string => '',
+    deserializeAttachment: (): WebSocketSerializedAttachment => ({})
+  };
+  
   return {
-    websocket: new MockWebSocket('ws://test') as any,
+    websocket: completeWebSocket,
     userId: 'test-user-id',
     username: 'TestUser',
     roomId: 'test-room',
